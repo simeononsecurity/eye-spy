@@ -83,6 +83,7 @@
 #define PTS_MESHCORE           2
 #define PTS_IBEACON            2
 #define PTS_PERSIST            2
+#define PTS_FLOCK_OUI          5
 #define PTS_ALPR_OUI           5
 #define PTS_FLOCK_SSID         5
 #define PTS_ALPR_SSID          4
@@ -121,11 +122,10 @@ static const uint8_t CAM_OUIS[][3] = {
 };
 #define NUM_CAM_OUIS (sizeof(CAM_OUIS)/sizeof(CAM_OUIS[0]))
 
-// ALPR / Flock Safety OUIs (combined — all score ALPR)
-static const uint8_t ALPR_OUIS[][3] = {
-    {0x00,0x0e,0x58},                                   // Motorola/Vigilant
-    {0xd4,0xbb,0xe6},{0x3c,0x61,0x05},                  // Flock Safety (known)
-    // Flock/FS-Ext-Battery MAC prefixes from nyanBOX flock_detector
+// Flock Safety camera OUIs — scored separately from general ALPR (+5)
+static const uint8_t FLOCK_OUIS[][3] = {
+    {0xd4,0xbb,0xe6},{0x3c,0x61,0x05},                  // Flock Safety (IEEE registered)
+    // FS-Ext-Battery / Flock Wi-Fi device MAC prefixes (from nyanBOX flock_detector)
     {0x58,0x8e,0x81},{0xec,0x1b,0xbd},{0x90,0x35,0xea},
     {0x04,0x0d,0x84},{0xf0,0x82,0xc0},{0x1c,0x34,0xf1},
     {0x38,0x5b,0x44},{0x94,0x34,0x69},{0xb4,0xe3,0xf9},
@@ -133,6 +133,12 @@ static const uint8_t ALPR_OUIS[][3] = {
     {0x80,0x30,0x49},{0x14,0x5a,0xfc},{0x74,0x4c,0xa1},
     {0x08,0x3a,0x88},{0x9c,0x2f,0x9d},{0x94,0x08,0x53},
     {0xe4,0xaa,0xea},
+};
+#define NUM_FLOCK_OUIS (sizeof(FLOCK_OUIS)/sizeof(FLOCK_OUIS[0]))
+
+// ALPR OUIs — Motorola Solutions / Vigilant Solutions LPR cameras
+static const uint8_t ALPR_OUIS[][3] = {
+    {0x00,0x0e,0x58},                                   // Motorola Solutions / Vigilant
 };
 #define NUM_ALPR_OUIS (sizeof(ALPR_OUIS)/sizeof(ALPR_OUIS[0]))
 
@@ -185,6 +191,7 @@ DECL_DETECTOR(ibeacon);
 DECL_DETECTOR(persist);
 
 // WiFi scored inline (not volatile)
+static unsigned long g_flockOuiScored = 0;
 static unsigned long g_alprOuiScored  = 0;
 static unsigned long g_flockSsidScored= 0;
 static unsigned long g_alprSsidScored = 0;
@@ -458,16 +465,23 @@ static void performWifiScan() {
     if (n <= 0) { Serial.println("[eyespy] scan 0 nets"); return; }
 
     unsigned long now = millis();
-    bool fAlprOui=false, fFlockSsid=false, fAlprSsid=false,
-         fCamOui=false,  fCamSsid=false;
+    bool fFlockOui=false, fAlprOui=false, fFlockSsid=false,
+         fAlprSsid=false, fCamOui=false,  fCamSsid=false;
 
     for (int i = 0; i < n; i++) {
         if (WiFi.RSSI(i) < RSSI_MIN) continue;
         uint8_t*    bssid = WiFi.BSSID(i);
         const char* ssid  = WiFi.SSID(i).c_str();
 
+        // Flock Safety camera OUI — dedicated table
+        if (!fFlockOui && bssid && ouiMatch(bssid, FLOCK_OUIS, NUM_FLOCK_OUIS)) {
+            Serial.printf("[eyespy] Flock-cam OUI %02x:%02x:%02x \"%s\"\n",
+                          bssid[0],bssid[1],bssid[2], ssid);
+            fFlockOui = true;
+        }
+        // Motorola / Vigilant LPR camera OUI
         if (!fAlprOui && bssid && ouiMatch(bssid, ALPR_OUIS, NUM_ALPR_OUIS)) {
-            Serial.printf("[eyespy] ALPR/Flock OUI %02x:%02x:%02x \"%s\"\n",
+            Serial.printf("[eyespy] ALPR OUI      %02x:%02x:%02x \"%s\"\n",
                           bssid[0],bssid[1],bssid[2], ssid);
             fAlprOui = true;
         }
@@ -491,6 +505,7 @@ static void performWifiScan() {
     }
     WiFi.scanDelete();
 
+    if (fFlockOui)  addScore(PTS_FLOCK_OUI, now, &g_flockOuiScored, "Flock-cam-OUI");
     if (fAlprOui)   addScore(PTS_ALPR_OUI,  now, &g_alprOuiScored,  "ALPR-OUI");
     if (fFlockSsid) addScore(PTS_FLOCK_SSID,now, &g_flockSsidScored,"Flock-SSID");
     if (fAlprSsid)  addScore(PTS_ALPR_SSID, now, &g_alprSsidScored, "ALPR-SSID");
