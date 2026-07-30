@@ -1,0 +1,115 @@
+name: Build Firmware & Deploy Web Flasher
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO & esptool
+        run: pip install platformio esptool
+
+      # ── Build all environments ───────────────────────────────────────
+      - name: Build atom-lite
+        run: pio run -e atom-lite
+
+      - name: Build atom-echo
+        run: pio run -e atom-echo
+
+      - name: Build atom-voice
+        run: pio run -e atom-voice
+
+      - name: Build esp32dev
+        run: pio run -e esp32dev
+
+      # ── Assemble site ────────────────────────────────────────────────
+      - name: Prepare firmware directories
+        run: |
+          set -e
+          mkdir -p site/firmware
+
+          # Find boot_app0.bin from installed Arduino framework
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" 2>/dev/null | head -1)
+          if [ -z "$BOOT_APP0" ]; then
+            echo "ERROR: boot_app0.bin not found in PlatformIO packages"
+            exit 1
+          fi
+          echo "Found boot_app0.bin at: $BOOT_APP0"
+
+          for env in atom-lite atom-echo atom-voice esp32dev; do
+            mkdir -p site/firmware/$env
+            cp .pio/build/$env/firmware.bin   site/firmware/$env/
+            cp .pio/build/$env/bootloader.bin site/firmware/$env/
+            cp .pio/build/$env/partitions.bin site/firmware/$env/
+            cp "$BOOT_APP0"                   site/firmware/$env/boot_app0.bin
+            echo "Copied $env ($(du -sh site/firmware/$env/firmware.bin | cut -f1))"
+          done
+
+      - name: Generate manifests
+        run: |
+          set -e
+
+          gen_manifest() {
+            local env=$1
+            local name=$2
+            cat > site/manifest-${env}.json << MANIFEST
+          {
+            "name": "${name}",
+            "version": "latest",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "firmware/${env}/bootloader.bin", "offset": 4096 },
+                  { "path": "firmware/${env}/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/${env}/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/${env}/firmware.bin",   "offset": 65536 }
+                ]
+              }
+            ]
+          }
+          MANIFEST
+          }
+
+          gen_manifest "atom-lite"  "Eye Spy — M5Atom Lite"
+          gen_manifest "atom-echo"  "Eye Spy — M5Atom Echo"
+          gen_manifest "atom-voice" "Eye Spy — M5Atom Voice"
+          gen_manifest "esp32dev"   "Eye Spy — Generic ESP32 DevKit"
+
+          echo "Manifests generated:"
+          ls -la site/manifest-*.json
+
+      - name: Copy flasher page
+        run: cp docs/index.html site/index.html
+
+      - name: Deploy to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: site
+          clean: true
+          commit-message: "ci: deploy firmware build ${{ github.sha }}"
