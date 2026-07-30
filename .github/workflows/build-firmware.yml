@@ -45,6 +45,9 @@ jobs:
       - name: Build esp32dev
         run: pio run -e esp32dev
 
+      - name: Build lilygo-t-dongle-c5
+        run: pio run -e lilygo-t-dongle-c5
+
       # ── Assemble site ────────────────────────────────────────────────
       - name: Prepare firmware directories
         run: |
@@ -59,7 +62,7 @@ jobs:
           fi
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
-          for env in atom-lite atom-echo atom-voice esp32dev; do
+          for env in atom-lite atom-echo atom-voice esp32dev lilygo-t-dongle-c5; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -99,6 +102,26 @@ jobs:
           gen_manifest "atom-echo"  "Eye Spy — M5Atom Echo"
           gen_manifest "atom-voice" "Eye Spy — M5Atom Voice"
           gen_manifest "esp32dev"   "Eye Spy — Generic ESP32 DevKit"
+
+          # ESP32-C5 manifest (RISC-V — bootloader at 0x0)
+          cat > site/manifest-lilygo-t-dongle-c5.json << MANIFEST
+          {
+            "name": "Eye Spy — LILYGO T-Dongle C5 (ESP32-C5)",
+            "version": "latest",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-C5",
+                "parts": [
+                  { "path": "firmware/lilygo-t-dongle-c5/bootloader.bin", "offset": 0 },
+                  { "path": "firmware/lilygo-t-dongle-c5/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/lilygo-t-dongle-c5/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/lilygo-t-dongle-c5/firmware.bin",   "offset": 65536 }
+                ]
+              }
+            ]
+          }
+          MANIFEST
 
           echo "Manifests generated:"
           ls -la site/manifest-*.json

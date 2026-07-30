@@ -76,6 +76,12 @@
   #define USE_BUZZER      0
   #define USE_M5_SPEAKER  1
   #include <M5Unified.h>
+#elif defined(T_DONGLE_C5)
+  // LILYGO T-Dongle C5 — ESP32-C5 RISC-V, dual-band WiFi 6 + BT5
+  // Plain GPIO8 LED (not NeoPixel); serial-only output for now
+  #define USE_LED         0
+  #define USE_BUZZER      0
+  #define USE_M5_SPEAKER  0
 #else
   #define USE_LED         1
   #define USE_BUZZER      0
