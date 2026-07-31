@@ -85,6 +85,8 @@ During the promiscuous phase, the radio channel-hops across `{1, 6, 11, 3, 8, 13
 
 ## Hardware
 
+### M5Stack Atom Lite (primary)
+
 | | |
 |---|---|
 | Board | M5Stack Atom Lite |
@@ -92,6 +94,29 @@ During the promiscuous phase, the radio channel-hops across `{1, 6, 11, 3, 8, 13
 | LED | SK6812 NeoPixel on GPIO27 |
 | Button | GPIO39 (input only) |
 | Flash | 4 MB |
+
+### LILYGO T-Dongle C5 (experimental)
+
+| | |
+|---|---|
+| Board | LILYGO T-Dongle C5 |
+| MCU | ESP32-C5 RISC-V, dual-band WiFi 6 + BT 5 |
+| Display | ST7735S 80×160 colour TFT |
+| RGB LED | WS2812B on GPIO11 |
+| BOOT button | GPIO9 |
+| Flash | 4 MB |
+
+**T-Dongle C5 TFT display layout:**
+
+| Score | Background | Large score # | Status |
+|---|---|---|---|
+| 0–2 | Black | 🟢 Green | CLEAR |
+| 3–5 | Dark amber | 🟡 Yellow | CAUTION |
+| 6+ | Dark red | 🔴 Red | ALERT |
+
+Current scan phase (BLE / WIFI / PROMISC) is shown at the bottom of the screen.
+The WS2812B RGB LED mirrors the score level (green / amber / red) for at-a-glance
+visibility without looking at the screen.
 
 ---
 
@@ -109,11 +134,16 @@ pio device monitor -b 115200
 
 # Generic ESP32 devkit (LED on GPIO2)
 pio run -e esp32dev
+
+# LILYGO T-Dongle C5 (experimental — ESP32-C5 dual-band WiFi 6 + BT 5)
+pio run -e lilygo-t-dongle-c5 -t upload
 ```
 
 Dependencies (installed automatically by PlatformIO):
 - `adafruit/Adafruit NeoPixel @ ^1.15.1`
 - `h2zero/NimBLE-Arduino @ ^1.4.3`
+- `adafruit/Adafruit ST7735 and ST7789 Library @ ^1.10.4` *(T-Dongle C5 only)*
+- `adafruit/Adafruit GFX Library @ ^1.11.9` *(T-Dongle C5 only)*
 
 ---
 
