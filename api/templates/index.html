@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Eye Spy Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--sub:#8b949e;--ok:#3fb950;--warn:#d29922;--alert:#f85149;--accent:#58a6ff;--ble:#bc8cff}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px}
+header h1{font-size:1.2rem;font-weight:700;color:var(--accent)}header span{color:var(--sub);font-size:.85rem}
+.layout{display:grid;grid-template-columns:300px 1fr;gap:0;height:calc(100vh - 53px)}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.main{display:flex;flex-direction:column;overflow:hidden}
+.panel{padding:14px;border-bottom:1px solid var(--border)}
+.panel h2{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--sub);margin-bottom:10px}
+label{display:block;font-size:.8rem;margin-bottom:4px;color:var(--sub)}
+select,input{width:100%;background:#0d1117;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:.85rem;margin-bottom:8px}
+.btn{width:100%;padding:7px;border-radius:6px;border:none;cursor:pointer;font-size:.85rem;font-weight:600}
+.btn-primary{background:var(--accent);color:#0d1117}.btn-danger{background:var(--alert);color:#fff}
+.btn-sm{padding:5px 10px;font-size:.78rem;border-radius:5px;border:none;cursor:pointer;font-weight:600;color:#fff}
+.btn-ok{background:var(--ok)}.btn-warn{background:var(--warn)}.btn-sub{background:var(--border);color:var(--text)}
+.score-box{text-align:center;padding:18px 0 10px}
+.score-num{font-size:3.5rem;font-weight:800;line-height:1;transition:color .3s}
+.score-label{display:inline-block;margin-top:6px;padding:3px 14px;border-radius:12px;font-size:.8rem;font-weight:700}
+.badge-CLEAR{background:rgba(63,185,80,.15);color:var(--ok)}
+.badge-CAUTION{background:rgba(210,153,34,.15);color:var(--warn)}
+.badge-ALERT{background:rgba(248,81,73,.2);color:var(--alert)}
+.phase-row{display:flex;justify-content:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.phase-chip{padding:2px 10px;border-radius:10px;font-size:.72rem;font-weight:600;background:var(--border);color:var(--sub)}
+.phase-chip.active{background:rgba(88,166,255,.15);color:var(--accent)}
+.stat-row{display:flex;justify-content:space-between;font-size:.8rem;padding:3px 0}
+.stat-val{color:var(--text);font-weight:600}.stat-key{color:var(--sub)}
+.det-list{flex:1;overflow-y:auto;padding:0}
+.det-item{padding:8px 14px;border-bottom:1px solid rgba(48,54,61,.5);cursor:default;transition:background .15s}
+.det-item:hover{background:rgba(22,27,34,.8)}
+.det-item .row1{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.det-type{font-size:.7rem;font-weight:700;padding:1px 6px;border-radius:4px}
+.type-ble{background:rgba(188,140,255,.15);color:var(--ble)}
+.type-wifi{background:rgba(88,166,255,.15);color:var(--accent)}
+.type-score{background:rgba(63,185,80,.15);color:var(--ok)}
+.det-method{font-size:.82rem;font-weight:600;color:var(--text)}
+.det-meta{font-size:.73rem;color:var(--sub);margin-top:2px}
+.det-time{font-size:.7rem;color:var(--sub)}
+.has-gps::after{content:"📍";margin-left:4px;font-size:.7rem}
+.main-top{display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid var(--border);height:50%}
+.map-wrap{position:relative;overflow:hidden}
+#map{height:100%;width:100%}
+.map-overlay{position:absolute;top:8px;right:8px;z-index:1000;display:flex;gap:6px;flex-wrap:wrap}
+.terminal-wrap{background:#0a0e13;border-left:1px solid var(--border);display:flex;flex-direction:column}
+.term-header{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--surface)}
+.term-header span{font-size:.75rem;font-weight:600;text-transform:uppercase;color:var(--sub)}
+#terminal{flex:1;overflow-y:auto;padding:8px 10px;font-family:'SF Mono',Consolas,monospace;font-size:.72rem;line-height:1.5;color:#7ee787}
+.main-bottom{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.table-header{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--border);background:var(--surface)}
+.table-header span{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--sub)}
+.export-btns{display:flex;gap:6px}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+thead th{position:sticky;top:0;background:var(--surface);padding:7px 12px;text-align:left;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid rgba(48,54,61,.4);transition:background .15s}
+tbody tr:hover{background:rgba(88,166,255,.04)}
+tbody td{padding:6px 12px;color:var(--text)}
+.table-scroll{flex:1;overflow-y:auto}
+.conn-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.dot-ok{background:var(--ok)}.dot-off{background:var(--sub)}
+.rssi-bar{display:inline-block;width:4px;border-radius:2px;vertical-align:middle;margin-right:1px;background:var(--ok)}
+@media(max-width:900px){.layout{grid-template-columns:1fr;height:auto}.main-top{grid-template-columns:1fr;height:auto}#map{height:250px}.sidebar{max-height:none}}
+</style>
+</head>
+<body>
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+  <h1>Eye Spy</h1>
+  <span>Live Surveillance Detector Dashboard</span>
+  <span id="conn-status" style="margin-left:auto;font-size:.78rem"><span class="conn-dot dot-off" id="dev-dot"></span><span id="dev-label">Disconnected</span></span>
+</header>
+<div class="layout">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <!-- Score -->
+    <div class="score-box">
+      <div class="score-num" id="score-num" style="color:var(--ok)">0</div>
+      <div><span class="score-label badge-CLEAR" id="status-badge">CLEAR</span></div>
+      <div class="phase-row">
+        <div class="phase-chip" id="phase-BLE">BLE</div>
+        <div class="phase-chip" id="phase-WIFI">WIFI</div>
+        <div class="phase-chip" id="phase-PROMISC">PROMISC</div>
+      </div>
+    </div>
+    <!-- Stats panel -->
+    <div class="panel">
+      <h2>Stats</h2>
+      <div class="stat-row"><span class="stat-key">Tracked Devices</span><span class="stat-val" id="stat-tracked">0</span></div>
+      <div class="stat-row"><span class="stat-key">Total Detections</span><span class="stat-val" id="stat-total">0</span></div>
+      <div class="stat-row"><span class="stat-key">GPS</span><span class="stat-val" id="stat-gps">No Fix</span></div>
+    </div>
+    <!-- Device connect -->
+    <div class="panel">
+      <h2>Device Serial</h2>
+      <select id="dev-port"><option value="">— Select Port —</option></select>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-primary" id="btn-connect" onclick="connectDevice()">Connect</button>
+        <button class="btn btn-danger" style="width:auto;padding:7px 12px" onclick="disconnectDevice()">✕</button>
+      </div>
+    </div>
+    <!-- GPS connect -->
+    <div class="panel">
+      <h2>GPS Serial (optional)</h2>
+      <select id="gps-port"><option value="">— Select Port —</option></select>
+      <select id="gps-baud"><option value="9600">9600 baud</option><option value="4800">4800</option><option value="38400">38400</option><option value="115200">115200</option></select>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-primary" style="background:#3fb950" onclick="connectGPS()">Connect GPS</button>
+        <button class="btn btn-danger" style="width:auto;padding:7px 12px" onclick="disconnectGPS()">✕</button>
+      </div>
+    </div>
+    <!-- Detection list -->
+    <div class="panel" style="padding-bottom:6px"><h2>Recent Detections</h2></div>
+    <div class="det-list" id="det-sidebar"></div>
+  </div>
+  <!-- Main -->
+  <div class="main">
+    <div class="main-top">
+      <!-- Map -->
+      <div class="map-wrap">
+        <div id="map"></div>
+        <div class="map-overlay">
+          <button class="btn-sm btn-sub" onclick="centerMap()">📍 Center</button>
+          <button class="btn-sm btn-ok" onclick="clearMap()">Clear</button>
+        </div>
+      </div>
+      <!-- Terminal -->
+      <div class="terminal-wrap">
+        <div class="term-header">
+          <span>Serial Terminal</span>
+          <button class="btn-sm btn-sub" onclick="clearTerminal()">Clear</button>
+        </div>
+        <div id="terminal"></div>
+      </div>
+    </div>
+    <!-- Table -->
+    <div class="main-bottom">
+      <div class="table-header">
+        <span>Detection Log (<span id="det-count">0</span>)</span>
+        <div class="export-btns">
+          <button class="btn-sm btn-ok" onclick="exportData('json')">JSON</button>
+          <button class="btn-sm" style="background:var(--warn);color:#000" onclick="exportData('csv')">CSV</button>
+          <button class="btn-sm" style="background:#58a6ff;color:#000" onclick="exportData('kml')">KML</button>
+          <button class="btn-sm btn-danger" onclick="clearAll()">Clear All</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>#</th><th>Time</th><th>Type</th><th>Method</th><th>MAC / OUI</th><th>SSID</th><th>RSSI</th><th>Score</th><th>Level</th><th>GPS</th></tr></thead>
+          <tbody id="det-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const socket = io();
+let map, markers=[], detections=[], gpsPos=null, gpsMarker=null;
+
+// Map init
+map = L.map('map').setView([39.5,-98.35],4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OSM'}).addTo(map);
+
+// Socket events
+socket.on('connect',()=>{ loadPorts(); loadStatus(); loadDetections(); socket.emit('join_terminal'); });
+socket.on('score_update',d=>{ updateScore(d.score,d.status,d.phase,d.tracked); });
+socket.on('new_detection',d=>{ addDetRow(d); addSidebarItem(d); if(d.gps&&d.gps.latitude) addMapMarker(d); });
+socket.on('serial_data',line=>{ appendTerminal(line); });
+socket.on('gps_update',g=>{ updateGPS(g); });
+socket.on('device_disconnected',()=>{ setDevStatus(false); });
+socket.on('gps_disconnected',()=>{ document.getElementById('stat-gps').textContent='Disconnected'; });
+
+function updateScore(score,status,phase,tracked){
+  const el=document.getElementById('score-num');
+  el.textContent=score;
+  const colors={CLEAR:'var(--ok)',CAUTION:'var(--warn)',ALERT:'var(--alert)'};
+  el.style.color=colors[status]||'var(--text)';
+  const badge=document.getElementById('status-badge');
+  badge.textContent=status; badge.className='score-label badge-'+status;
+  ['BLE','WIFI','PROMISC'].forEach(p=>{ document.getElementById('phase-'+p).classList.remove('active'); });
+  if(phase&&document.getElementById('phase-'+phase)) document.getElementById('phase-'+phase).classList.add('active');
+  document.getElementById('stat-tracked').textContent=tracked||0;
+}
+function updateGPS(g){
+  const fix=g.fix_quality>0;
+  document.getElementById('stat-gps').textContent=fix?`${g.latitude.toFixed(5)},${g.longitude.toFixed(5)} (${g.satellites} sat)`:'No Fix';
+  if(fix){
+    gpsPos=[g.latitude,g.longitude];
+    if(!gpsMarker){ gpsMarker=L.circleMarker(gpsPos,{radius:8,color:'#58a6ff',fillColor:'#58a6ff',fillOpacity:.8}).addTo(map).bindPopup('Your Location'); }
+    else gpsMarker.setLatLng(gpsPos);
+  }
+}
+function addMapMarker(d){
+  const g=d.gps; if(!g||!g.latitude) return;
+  const lvl=d.alert_level||'CLEAR';
+  const colors={CLEAR:'#3fb950',CAUTION:'#d29922',ALERT:'#f85149'};
+  const m=L.circleMarker([g.latitude,g.longitude],{radius:7,color:colors[lvl],fillColor:colors[lvl],fillOpacity:.75})
+    .addTo(map).bindPopup(`<b>${d.detection_method||'?'}</b><br>Level: ${lvl}<br>Score: ${d.score_at_time||0}<br>MAC: ${d.mac_address||'?'}<br>RSSI: ${d.rssi||'?'}<br>${d.detection_time||''}`);
+  markers.push(m);
+}
+function addDetRow(d){
+  const tb=document.getElementById('det-table');
+  const tr=document.createElement('tr'); tr.dataset.id=d.id;
+  const lvlColors={CLEAR:'var(--ok)',CAUTION:'var(--warn)',ALERT:'var(--alert)'};
+  const typeClass={ble:'type-ble',wifi:'type-wifi',score:'type-score'}[d.detection_type]||'type-score';
+  const mac=d.mac_address||d.oui||'—'; const ssid=d.ssid||'—'; const rssi=d.rssi!=null?d.rssi+'dBm':'—';
+  const hasGps=d.gps&&d.gps.latitude?'📍':'';
+  tr.innerHTML=`<td>${d.id}</td><td>${(d.detection_time||'').split(' ')[1]||''}</td>
+    <td><span class="det-type ${typeClass}">${(d.detection_type||'?').toUpperCase()}</span></td>
+    <td>${d.detection_method||'?'}</td><td style="font-family:monospace;font-size:.7rem">${mac}</td>
+    <td>${ssid}</td><td>${rssi}</td><td>${d.score_at_time||0}</td>
+    <td style="color:${lvlColors[d.alert_level]||'var(--text)';font-weight:600}">${d.alert_level||'?'}</td><td>${hasGps}</td>`;
+  tb.insertBefore(tr,tb.firstChild);
+  document.getElementById('det-count').textContent=tb.rows.length;
+}
+function addSidebarItem(d){
+  const sb=document.getElementById('det-sidebar'); const div=document.createElement('div');
+  div.className='det-item'; const typeClass={ble:'type-ble',wifi:'type-wifi',score:'type-score'}[d.detection_type]||'type-score';
+  const lvlColors={CLEAR:'var(--ok)',CAUTION:'var(--warn)',ALERT:'var(--alert)'};
+  const hasGps=d.gps&&d.gps.latitude?' has-gps':'';
+  div.innerHTML=`<div class="row1"><span class="det-method${hasGps}">${d.detection_method||'?'}</span><span class="det-type ${typeClass}">${(d.detection_type||'?').toUpperCase()}</span></div>
+    <div class="det-meta">Score: <b style="color:${lvlColors[d.alert_level]||'var(--text)'}">${d.score_at_time||0}</b> · ${d.rssi!=null?d.rssi+'dBm':''}${d.mac_address?' · '+d.mac_address:''}</div>`;
+  sb.insertBefore(div,sb.firstChild); if(sb.children.length>100) sb.removeChild(sb.lastChild);
+}
+function appendTerminal(line){
+  const t=document.getElementById('terminal'); const div=document.createElement('div');
+  div.textContent=line; t.appendChild(div); t.scrollTop=t.scrollHeight; if(t.children.length>500) t.removeChild(t.firstChild);
+}
+function setDevStatus(connected,port){
+  document.getElementById('dev-dot').className='conn-dot '+(connected?'dot-ok':'dot-off');
+  document.getElementById('dev-label').textContent=connected?'Connected: '+port:'Disconnected';
+}
+async function loadPorts(){
+  try{
+    const r=await fetch('/api/serial/ports'); const ports=await r.json();
+    ['dev-port','gps-port'].forEach(id=>{
+      const sel=document.getElementById(id); const cur=sel.value;
+      sel.innerHTML='<option value="">— Select Port —</option>';
+      ports.forEach(p=>{ const o=document.createElement('option'); o.value=p.port; o.textContent=p.port+(p.description?' ('+p.description+')':''); if(p.port===cur)o.selected=true; sel.appendChild(o); });
+    });
+  }catch(e){console.error(e)}
+}
+async function loadStatus(){
+  try{
+    const r=await fetch('/api/status'); const s=await r.json();
+    updateScore(s.score,s.status,s.phase,s.tracked);
+    document.getElementById('stat-total').textContent=s.detection_count||0;
+    if(s.device_connected) setDevStatus(true,s.device_port);
+  }catch(e){console.error(e)}
+}
+async function loadDetections(){
+  try{
+    const r=await fetch('/api/detections'); const dets=await r.json();
+    dets.forEach(d=>{ addDetRow(d); addSidebarItem(d); if(d.gps&&d.gps.latitude) addMapMarker(d); });
+    document.getElementById('stat-total').textContent=dets.length;
+  }catch(e){console.error(e)}
+}
+async function connectDevice(){
+  const port=document.getElementById('dev-port').value; if(!port) return alert('Select a port first');
+  try{
+    const r=await fetch('/api/device/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({port})});
+    const d=await r.json(); if(d.status==='ok') setDevStatus(true,port); else alert('Error: '+d.message);
+  }catch(e){alert('Connection failed: '+e)}
+}
+async function disconnectDevice(){
+  await fetch('/api/device/disconnect',{method:'POST'}); setDevStatus(false);
+}
+async function connectGPS(){
+  const port=document.getElementById('gps-port').value; const baud=parseInt(document.getElementById('gps-baud').value);
+  if(!port) return alert('Select GPS port first');
+  try{
+    const r=await fetch('/api/gps/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({port,baud})});
+    const d=await r.json(); if(d.status==='ok') document.getElementById('stat-gps').textContent='Connected: '+port; else alert('Error: '+d.message);
+  }catch(e){alert('GPS connection failed: '+e)}
+}
+async function disconnectGPS(){ await fetch('/api/gps/disconnect',{method:'POST'}); }
+function exportData(fmt){ window.location='/api/export/'+fmt; }
+async function clearAll(){
+  if(!confirm('Clear all detections?')) return;
+  await fetch('/api/clear',{method:'POST'});
+  document.getElementById('det-table').innerHTML=''; document.getElementById('det-sidebar').innerHTML='';
+  document.getElementById('det-count').textContent=0; document.getElementById('stat-total').textContent=0;
+  updateScore(0,'CLEAR','?',0); markers.forEach(m=>map.removeLayer(m)); markers=[];
+}
+function clearTerminal(){ document.getElementById('terminal').innerHTML=''; }
+function centerMap(){ if(gpsPos) map.setView(gpsPos,15); else if(markers.length) map.fitBounds(markers.map(m=>m.getLatLng())); }
+function clearMap(){ markers.forEach(m=>map.removeLayer(m)); markers=[]; }
+setInterval(loadPorts,10000);
+</script>
+</body>
+</html>
