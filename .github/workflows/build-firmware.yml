@@ -31,6 +31,12 @@ jobs:
       - name: Install PlatformIO & esptool
         run: pip install platformio esptool
 
+      # ── Build experimental C5 FIRST so its project-level clean (if any)
+      #    does not wipe the required builds that follow ─────────────────────
+      - name: Build lilygo-t-dongle-c5 (experimental, runs first)
+        continue-on-error: true
+        run: pio run -e lilygo-t-dongle-c5
+
       # ── Build all required environments ─────────────────────────────────────
       - name: Build atom-lite
         run: pio run -e atom-lite
@@ -44,10 +50,31 @@ jobs:
       - name: Build esp32dev
         run: pio run -e esp32dev
 
-      # ── Build experimental C5 environment (non-blocking) ────────────────────
-      - name: Build lilygo-t-dongle-c5 (experimental)
-        continue-on-error: true
-        run: pio run -e lilygo-t-dongle-c5
+      # ── Verify required build artifacts ─────────────────────────────────────
+      - name: Verify build artifacts
+        run: |
+          echo "=== Build directory contents ==="
+          find .pio/build -name "firmware.bin" 2>/dev/null | sort
+          echo "--- directories ---"
+          ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
+
+          # Required envs — failure here blocks deploy
+          for env in atom-lite atom-echo atom-voice esp32dev; do
+            if [ -f ".pio/build/$env/firmware.bin" ]; then
+              echo "✅ $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
+            else
+              echo "❌ $env: firmware.bin MISSING"
+              ls -la ".pio/build/$env/" 2>/dev/null || echo "  (build dir does not exist)"
+              exit 1
+            fi
+          done
+
+          # Optional C5 env — advisory only
+          if [ -f ".pio/build/lilygo-t-dongle-c5/firmware.bin" ]; then
+            echo "✅ lilygo-t-dongle-c5: $(du -sh .pio/build/lilygo-t-dongle-c5/firmware.bin | cut -f1)"
+          else
+            echo "⚠️  lilygo-t-dongle-c5: not built (ESP32-C5 experimental — skipping)"
+          fi
 
       # ── Assemble site ────────────────────────────────────────────────────────
       - name: Prepare firmware directories
