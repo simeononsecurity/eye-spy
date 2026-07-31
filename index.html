@@ -193,6 +193,8 @@
       color: var(--green);
     }
 
+    .badge-c5 { background: #2a1c3a; color: #d2a8ff; }
+
     /* ── Footer ──────────────────────────────────────────────────── */
     footer {
       margin-top: 2rem;
@@ -224,6 +226,7 @@
       <option value="manifest-atom-echo.json">M5Atom Echo &nbsp;·&nbsp; RGB LED + buzzer</option>
       <option value="manifest-atom-voice.json">M5Atom Voice &nbsp;·&nbsp; RGB LED + speaker</option>
       <option value="manifest-esp32dev.json">Generic ESP32 DevKit &nbsp;·&nbsp; serial + LED</option>
+      <option value="manifest-lilygo-t-dongle-c5.json">LILYGO T-Dongle C5 &nbsp;·&nbsp; ESP32-C5 dual-band WiFi 6</option>
     </select>
 
     <p class="board-note" id="board-note"></p>
@@ -286,6 +289,11 @@
           <td><span class="badge">ESP32</span></td>
           <td>Serial log + LED (GPIO2)</td>
         </tr>
+        <tr>
+          <td>LILYGO T-Dongle C5</td>
+          <td><span class="badge badge-c5">ESP32-C5</span></td>
+          <td>Serial output · dual-band WiFi 6</td>
+        </tr>
       </tbody>
     </table>
   </div>
@@ -320,6 +328,7 @@
     "manifest-atom-echo.json":  "ESP32-PICO-D4 · RGB LED · built-in buzzer on GPIO25",
     "manifest-atom-voice.json": "ESP32-PICO-D4 · RGB LED · NS4168 I²S speaker",
     "manifest-esp32dev.json":   "Standard 38-pin ESP32 DevKit · onboard blue LED GPIO2",
+    "manifest-lilygo-t-dongle-c5.json": "ESP32-C5 RISC-V · dual-band WiFi 6 (2.4+5 GHz) · BT5 · 16MB flash · serial output",
   };
 
   const sel      = document.getElementById("board-select");
