@@ -26,13 +26,12 @@ jobs:
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: |
-            pio-${{ runner.os }}-
+          # No restore-keys — prevents stale partial-platform caches causing build failures
 
       - name: Install PlatformIO & esptool
         run: pip install platformio esptool
 
-      # ── Build all environments ───────────────────────────────────────
+      # ── Build all required environments ─────────────────────────────────────
       - name: Build atom-lite
         run: pio run -e atom-lite
 
@@ -45,10 +44,12 @@ jobs:
       - name: Build esp32dev
         run: pio run -e esp32dev
 
-      - name: Build lilygo-t-dongle-c5
+      # ── Build experimental C5 environment (non-blocking) ────────────────────
+      - name: Build lilygo-t-dongle-c5 (experimental)
+        continue-on-error: true
         run: pio run -e lilygo-t-dongle-c5
 
-      # ── Assemble site ────────────────────────────────────────────────
+      # ── Assemble site ────────────────────────────────────────────────────────
       - name: Prepare firmware directories
         run: |
           set -e
@@ -62,7 +63,8 @@ jobs:
           fi
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
-          for env in atom-lite atom-echo atom-voice esp32dev lilygo-t-dongle-c5; do
+          # Required environments
+          for env in atom-lite atom-echo atom-voice esp32dev; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -70,6 +72,18 @@ jobs:
             cp "$BOOT_APP0"                   site/firmware/$env/boot_app0.bin
             echo "Copied $env ($(du -sh site/firmware/$env/firmware.bin | cut -f1))"
           done
+
+          # LILYGO T-Dongle C5 (optional — only copy if build succeeded)
+          if [ -f ".pio/build/lilygo-t-dongle-c5/firmware.bin" ]; then
+            mkdir -p site/firmware/lilygo-t-dongle-c5
+            cp .pio/build/lilygo-t-dongle-c5/firmware.bin   site/firmware/lilygo-t-dongle-c5/
+            cp .pio/build/lilygo-t-dongle-c5/bootloader.bin site/firmware/lilygo-t-dongle-c5/
+            cp .pio/build/lilygo-t-dongle-c5/partitions.bin site/firmware/lilygo-t-dongle-c5/
+            cp "$BOOT_APP0"                                  site/firmware/lilygo-t-dongle-c5/boot_app0.bin
+            echo "Copied lilygo-t-dongle-c5"
+          else
+            echo "⚠️  lilygo-t-dongle-c5 build not found — skipping firmware copy"
+          fi
 
       - name: Generate manifests
         run: |
@@ -103,8 +117,9 @@ jobs:
           gen_manifest "atom-voice" "Eye Spy — M5Atom Voice"
           gen_manifest "esp32dev"   "Eye Spy — Generic ESP32 DevKit"
 
-          # ESP32-C5 manifest (RISC-V — bootloader at 0x0)
-          cat > site/manifest-lilygo-t-dongle-c5.json << MANIFEST
+          # ESP32-C5 manifest — only generate if firmware was built
+          if [ -d "site/firmware/lilygo-t-dongle-c5" ]; then
+            cat > site/manifest-lilygo-t-dongle-c5.json << MANIFEST
           {
             "name": "Eye Spy — LILYGO T-Dongle C5 (ESP32-C5)",
             "version": "latest",
@@ -122,6 +137,10 @@ jobs:
             ]
           }
           MANIFEST
+            echo "Generated manifest-lilygo-t-dongle-c5.json"
+          else
+            echo "⚠️  Skipping C5 manifest (firmware not built)"
+          fi
 
           echo "Manifests generated:"
           ls -la site/manifest-*.json
