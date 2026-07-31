@@ -78,10 +78,11 @@
   #include <M5Unified.h>
 #elif defined(T_DONGLE_C5)
   // LILYGO T-Dongle C5 — ESP32-C5 RISC-V, dual-band WiFi 6 + BT5
-  // Plain GPIO8 LED (not NeoPixel); serial-only output for now
+  // ST7735S TFT (80×160) + WS2812B RGB LED via c5_display.h
   #define USE_LED         0
   #define USE_BUZZER      0
   #define USE_M5_SPEAKER  0
+  #define USE_C5_DISPLAY  1
 #else
   #define USE_LED         1
   #define USE_BUZZER      0
@@ -90,6 +91,11 @@
 
 #if USE_LED
   #include <Adafruit_NeoPixel.h>
+#endif
+
+// T-Dongle C5 TFT display + RGB LED
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+  #include "c5_display.h"
 #endif
 
 // ─── Hardware ────────────────────────────────────────────────────────────────
@@ -710,6 +716,13 @@ static void updateLED() {
     } else {
         setLED(0, 80, 0);
     }
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+    {
+        const char* ph = (g_phase==PHASE_BLE) ? "BLE" :
+                         (g_phase==PHASE_WIFI_SCAN) ? "WIFI" : "PROMISC";
+        c5DisplayScore(g_score, nullptr, ph);
+    }
+#endif
 }
 
 // ─── Status print ─────────────────────────────────────────────────────────────
@@ -745,6 +758,10 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.println("[eyespy] Eye Spy v1.2 starting");
+
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+    c5DisplayInit();
+#endif
 
 #if USE_LED
     strip.begin();
