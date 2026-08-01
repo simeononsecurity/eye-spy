@@ -1,5 +1,5 @@
 /*
- * Eye Spy v1.2
+ * Eye Spy v1.3
  * Target:  M5Stack Atom Lite  (ESP32-PICO-D4, SK6812 LED GPIO27, button GPIO39)
  * Purpose: Passive detector for recording devices, surveillance cameras,
  *          trackers, ALPR, and privacy-threatening wireless equipment
@@ -282,10 +282,12 @@ static const char* SKIMMER_NAMES[] = { "HC-03", "HC-05", "HC-06", nullptr };
 
 // ─── Detection state for each engine ─────────────────────────────────────────
 #define DECL_DETECTOR(name) \
-    static volatile bool     g_##name##Det   = false; \
-    static volatile int8_t   g_##name##Rssi  = -100;  \
-    static volatile unsigned long g_##name##Seen = 0;  \
-    static          unsigned long g_##name##Scored = 0
+    static volatile bool          g_##name##Det      = false; \
+    static volatile int8_t        g_##name##Rssi     = -100;  \
+    static volatile unsigned long g_##name##Seen     = 0;     \
+    static          unsigned long g_##name##Scored   = 0;     \
+    static          uint16_t      g_##name##Count    = 0;     \
+    static          unsigned long g_##name##LoggedAt = 0
 
 DECL_DETECTOR(axon);
 DECL_DETECTOR(rayban);
@@ -313,8 +315,12 @@ static unsigned long g_camOuiScored         = 0;
 static unsigned long g_camSsidScored        = 0;
 
 // ─── Confidence score ─────────────────────────────────────────────────────────
-static int           g_score     = 0;
-static unsigned long g_lastDecay = 0;
+static int           g_score      = 0;
+static unsigned long g_lastDecay  = 0;
+// Last time any BLE detection flag was active in processBLE().
+// While this is within DETECTION_RESCORE_MS, score decay is suppressed
+// so the LED keeps alerting until the device actually disappears.
+static unsigned long g_stickySeen = 0;
 
 // ─── Device persistence tracker ──────────────────────────────────────────────
 #define MAX_TRACKED 50
@@ -467,7 +473,10 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
             for (const char** uuid = RAVEN_UUIDS; *uuid; uuid++) {
                 if (adv->isAdvertisingService(NimBLEUUID(*uuid))) {
                     g_ravenBleDet=true; g_ravenBleRssi=rssi; g_ravenBleSeen=now;
-                    Serial.printf("[eyespy] Raven UUID %s RSSI=%d\n", *uuid, (int)rssi);
+                    // Rate-limit the UUID detail log to once per DETECTION_RESCORE_MS
+                    if (now - g_ravenBleLoggedAt >= DETECTION_RESCORE_MS) {
+                        Serial.printf("[eyespy] Raven UUID %s RSSI=%d\n", *uuid, (int)rssi);
+                    }
                     matched=true; break;
                 }
             }
@@ -663,7 +672,13 @@ static void processBLE() {
 #define CHECK_DET(name, pts, tag) \
     if (g_##name##Det) { \
         g_##name##Det = false; \
-        Serial.printf("[eyespy] " tag "  RSSI=%d\n", (int)g_##name##Rssi); \
+        g_##name##Count++; \
+        g_stickySeen = now; \
+        if (now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
+            g_##name##LoggedAt = now; \
+            Serial.printf("[eyespy] " tag "  RSSI=%d  #%u\n", \
+                          (int)g_##name##Rssi, (unsigned)g_##name##Count); \
+        } \
         addScore(pts, now, &g_##name##Scored, tag); \
     }
 
@@ -686,6 +701,10 @@ static void processBLE() {
 // ─── Score decay ─────────────────────────────────────────────────────────────
 static void tickDecay() {
     unsigned long now = millis();
+    // Sticky alert: suppress decay while any detection type is still actively
+    // being seen (within DETECTION_RESCORE_MS).  Once the device disappears,
+    // g_stickySeen stops being refreshed and decay resumes after the window.
+    if (now - g_stickySeen < DETECTION_RESCORE_MS) return;
     if (now - g_lastDecay >= SCORE_DECAY_INTERVAL) {
         g_lastDecay = now;
         if (g_score > 0) { g_score--; Serial.printf("[eyespy] decay  score=%d\n", g_score); }
@@ -757,7 +776,7 @@ static void purgeTracked() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("[eyespy] Eye Spy v1.2 starting");
+    Serial.println("[eyespy] Eye Spy v1.3 starting");
 
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
     c5DisplayInit();
