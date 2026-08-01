@@ -338,7 +338,8 @@ static TrackedDev g_tracked[MAX_TRACKED];
 static uint8_t    g_trackedCount = 0;
 
 // ─── Phase / app state ────────────────────────────────────────────────────────
-enum Phase    { PHASE_BLE, PHASE_WIFI_SCAN, PHASE_PROMISC };
+// PHASE_WIFI_WAIT: async scan started; main loop keeps running (LED never stalls)
+enum Phase    { PHASE_BLE, PHASE_WIFI_SCAN, PHASE_WIFI_WAIT, PHASE_PROMISC };
 enum AppState { STATE_STARTUP, STATE_NORMAL };
 static Phase         g_phase      = PHASE_BLE;
 static unsigned long g_phaseStart = 0;
@@ -595,9 +596,8 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
 }
 
 // ─── WiFi scan ───────────────────────────────────────────────────────────────
-static void performWifiScan() {
-    Serial.println("[eyespy] WiFi scan");
-    int n = WiFi.scanNetworks(false, true, false, 120);
+// Called once the async scan has completed with result count n.
+static void processWifiScan(int n) {
     if (n <= 0) { Serial.println("[eyespy] scan 0 nets"); return; }
 
     unsigned long now = millis();
@@ -663,6 +663,13 @@ static void performWifiScan() {
     if (fCamOui)       addScore(PTS_CAM_OUI,        now, &g_camOuiScored,       "cam-OUI");
     if (fCamSsid)      addScore(PTS_CAM_SSID,       now, &g_camSsidScored,      "cam-SSID");
     Serial.printf("[eyespy] WiFi done  score=%d\n", g_score);
+}
+
+static void startWifiPromisc() {
+    promiscStart();
+    g_chanIdx = 0;
+    esp_wifi_set_channel(CHANNELS[0], WIFI_SECOND_CHAN_NONE);
+    g_phase = PHASE_PROMISC; g_phaseStart = millis();
 }
 
 // ─── Process BLE detections ───────────────────────────────────────────────────
@@ -751,7 +758,7 @@ static void printStatus() {
     if (now - g_lastStatus < 10000) return;
     g_lastStatus = now;
     const char* ph = (g_phase==PHASE_BLE) ? "BLE" :
-                     (g_phase==PHASE_WIFI_SCAN) ? "WIFI" : "PROMISC";
+                     (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
     const char* st = (g_score>=SCORE_ALERT) ? "ALERT" :
                      (g_score>=SCORE_CAUTION) ? "CAUTION" : "CLEAR";
     Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d\n",
@@ -885,12 +892,33 @@ void loop() {
             break;
 
         case PHASE_WIFI_SCAN:
-            performWifiScan();
-            promiscStart();
-            g_chanIdx = 0;
-            esp_wifi_set_channel(CHANNELS[0], WIFI_SECOND_CHAN_NONE);
-            g_phase = PHASE_PROMISC; g_phaseStart = millis();
+            // Kick off an async scan — returns immediately so the loop keeps
+            // running and updateLED() is never starved during the scan wait.
+            Serial.println("[eyespy] WiFi scan");
+            WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/true,
+                              /*passive=*/false, /*max_ms_per_chan=*/120);
+            g_phase = PHASE_WIFI_WAIT; g_phaseStart = millis();
             break;
+
+        case PHASE_WIFI_WAIT: {
+            int wn = WiFi.scanComplete();
+            if (wn == WIFI_SCAN_RUNNING) {
+                // Still scanning — LED keeps blinking normally.
+                // Guard against stale scans (shouldn't happen, but be safe).
+                if (now - g_phaseStart > 8000UL) {
+                    Serial.println("[eyespy] WiFi scan timeout");
+                    WiFi.scanDelete();
+                    Serial.printf("[eyespy] WiFi done  score=%d\n", g_score);
+                    startWifiPromisc();
+                }
+                break;
+            }
+            // Scan finished (success or failed).
+            if (wn >= 0) processWifiScan(wn);
+            else { Serial.println("[eyespy] WiFi scan failed"); WiFi.scanDelete(); }
+            startWifiPromisc();
+            break;
+        }
 
         case PHASE_PROMISC:
             channelHop();
