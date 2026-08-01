@@ -377,6 +377,7 @@ function selectFW(el,m){
 // ── Open Serial Monitor ──
 async function openSerial(){
   if(!('serial' in navigator)){alert('Web Serial requires Chrome or Edge on desktop.');return;}
+  if(dashPort||dashRunning) await dashDisconnect();
   try{
     const port=await navigator.serial.requestPort();
     await port.open({baudRate:115200});
@@ -414,6 +415,7 @@ function initDashMap(){
 
 async function dashConnect(){
   if(!('serial' in navigator))return alert('Web Serial requires Chrome/Edge desktop.');
+  if(dashPort||dashRunning) await dashDisconnect();
   try{
     dashPort=await navigator.serial.requestPort();
     await dashPort.open({baudRate:115200});
