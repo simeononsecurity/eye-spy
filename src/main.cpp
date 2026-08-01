@@ -473,8 +473,8 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
             for (const char** uuid = RAVEN_UUIDS; *uuid; uuid++) {
                 if (adv->isAdvertisingService(NimBLEUUID(*uuid))) {
                     g_ravenBleDet=true; g_ravenBleRssi=rssi; g_ravenBleSeen=now;
-                    // Rate-limit the UUID detail log to once per DETECTION_RESCORE_MS
-                    if (now - g_ravenBleLoggedAt >= DETECTION_RESCORE_MS) {
+                    // Rate-limit the UUID detail log; always print on first detection
+                    if (g_ravenBleCount == 0 || now - g_ravenBleLoggedAt >= DETECTION_RESCORE_MS) {
                         Serial.printf("[eyespy] Raven UUID %s RSSI=%d\n", *uuid, (int)rssi);
                     }
                     matched=true; break;
@@ -674,7 +674,7 @@ static void processBLE() {
         g_##name##Det = false; \
         g_##name##Count++; \
         g_stickySeen = now; \
-        if (now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
+        if (g_##name##Count == 1 || now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
             g_##name##LoggedAt = now; \
             Serial.printf("[eyespy] " tag "  RSSI=%d  #%u\n", \
                           (int)g_##name##Rssi, (unsigned)g_##name##Count); \
