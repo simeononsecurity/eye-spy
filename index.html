@@ -414,7 +414,7 @@ let cntBLE=0, cntWifi=0, gScore=0, gStatus='CLEAR', gPhase='?', gTracked=0;
 const RE_SCORE  = /\[eyespy\] \+(\d+) \(([^)]+)\)\s+score=(\d+)/;
 const RE_STATUS = /\[eyespy\] status\s+score=(\d+)\s+(\w+)\s+phase=(\w+)\s+tracked=(\d+)/;
 const RE_DECAY  = /\[eyespy\] decay\s+score=(\d+)/;
-const RE_BLE    = /\[eyespy\] (.+?)\s{2,}RSSI=(-?\d+)/;
+const RE_BLE    = /\[eyespy\] (.+?)\s{2,}RSSI=(-?\d+)(?:\s+#(\d+))?/;
 const RE_WIFI   = /\[eyespy\] (.+?) OUI ([0-9a-fA-F:]{8})\s+"([^"]*)"/;
 const RE_WIFI2  = /\[eyespy\] (.+?) OUI ([0-9a-fA-F:]{8})/;
 
@@ -476,7 +476,7 @@ function processLine(line){
   m=RE_WIFI2.exec(line);
   if(m){addEvent({type:'wifi',method:m[1],oui:m[2],ssid:'',rssi:null});return;}
   m=RE_BLE.exec(line);
-  if(m){addEvent({type:'ble',method:m[1],rssi:+m[2]});return;}
+  if(m){addEvent({type:'ble',method:m[1],rssi:+m[2],count:m[3]?+m[3]:null});return;}
 }
 
 function updateScore(){
@@ -493,6 +493,7 @@ function addEvent(ev){
   const det={id:++dashDid,ts:new Date().toLocaleTimeString(),
     type:ev.type,method:ev.method||'?',mac:ev.mac||null,oui:ev.oui||null,
     ssid:ev.ssid||null,rssi:ev.rssi!=null?ev.rssi:null,
+    count:ev.count!=null?ev.count:null,
     score:gScore,level:gStatus,gps:gpsPos?{lat:gpsPos[0],lon:gpsPos[1]}:null};
   if(ev.type==='ble')cntBLE++;else if(ev.type==='wifi')cntWifi++;
   dashDets.push(det);if(dashDets.length>2000)dashDets.shift();
@@ -513,7 +514,7 @@ function addDRow(det){
   const typeC={ble:'t-ble',wifi:'t-wifi',score:'t-score'}[det.type]||'t-score';
   tr.innerHTML=`<td>${det.id}</td><td>${det.ts}</td>
     <td><span class="det-badge ${typeC}">${det.type.toUpperCase()}</span></td>
-    <td>${det.method}</td>
+    <td>${det.method}${det.count>1?` <small style="color:var(--muted)">#${det.count}</small>`:''}</td>
     <td style="font-family:monospace;font-size:.7rem">${det.oui||det.mac||'—'}</td>
     <td>${det.ssid||'—'}</td>
     <td>${det.rssi!=null?det.rssi+'dBm':'—'}</td>
@@ -531,7 +532,7 @@ function addDFeed(det){
   const lvlC={CLEAR:'var(--green)',CAUTION:'var(--yellow)',ALERT:'var(--red)'};
   const gStr=det.gps?' has-gps':'';
   div.innerHTML=`<div class="d-row1"><span class="det-method${gStr}">${det.method}</span><span class="det-badge ${typeC}">${det.type.toUpperCase()}</span></div>
-    <div class="det-meta">Score: <b style="color:${lvlC[det.level]||'var(--text)'}">${det.score||0}</b>${det.rssi!=null?' · '+det.rssi+'dBm':''}${det.oui?' · '+det.oui:''}</div>`;
+    <div class="det-meta">Score: <b style="color:${lvlC[det.level]||'var(--text)'}">${det.score||0}</b>${det.rssi!=null?' · '+det.rssi+'dBm':''}${det.oui?' · '+det.oui:''}${det.count>1?' · seen #'+det.count:''}</div>`;
   feed.insertBefore(div,feed.firstChild);if(feed.children.length>80)feed.removeChild(feed.lastChild);
 }
 
@@ -540,7 +541,7 @@ function addDMapMarker(det){
   const lvlC={CLEAR:'#3fb950',CAUTION:'#d29922',ALERT:'#f85149'};
   const color=lvlC[det.level]||'#3fb950';
   const m=L.circleMarker([det.gps.lat,det.gps.lon],{radius:6,color,fillColor:color,fillOpacity:.75}).addTo(dashMap)
-    .bindPopup(`<b>${det.method}</b><br>Level: ${det.level}<br>Score: ${det.score}<br>RSSI: ${det.rssi||'?'}<br>${det.ts}`);
+    .bindPopup(`<b>${det.method}</b><br>Level: ${det.level}<br>Score: ${det.score}<br>RSSI: ${det.rssi||'?'}${det.count?' · #'+det.count+' seen':''}<br>${det.ts}`);
   dashMarkers.push(m);
 }
 
