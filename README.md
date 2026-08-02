@@ -1,4 +1,8 @@
-# Eye Spy v1.1
+# Eye Spy
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Author](https://img.shields.io/badge/Author-SimeonOnSecurity-green.svg)](https://github.com/simeononsecurity)
+
 
 > Passive surveillance detector for the **M5Stack Atom Lite** (ESP32-PICO-D4).  
 > Scans BLE and WiFi for body cameras, ALPR systems, AirTags, trackers, drones, and hidden cameras — LED turns red when something is watching.

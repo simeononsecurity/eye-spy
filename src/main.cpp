@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2024 SimeonOnSecurity <https://github.com/simeononsecurity>
+
 /*
  * Eye Spy v1.3
  * Target:  M5Stack Atom Lite  (ESP32-PICO-D4, SK6812 LED GPIO27, button GPIO39)
