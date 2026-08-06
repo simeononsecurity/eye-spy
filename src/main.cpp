@@ -86,6 +86,13 @@
   #define USE_BUZZER      0
   #define USE_M5_SPEAKER  0
   #define USE_C5_DISPLAY  1
+#elif defined(USE_M5BASIC)
+  // M5Stack Basic Core v2.7 — ILI9342C 320×240 IPS + 1W speaker + 3 buttons
+  // M5Unified handles all hardware. Init in m5basicInit() called from setup().
+  // USE_M5_SPEAKER=0 avoids double-init — the existing M5.begin() block is skipped.
+  #define USE_LED         0
+  #define USE_BUZZER      0
+  #define USE_M5_SPEAKER  0
 #else
   #define USE_LED         1
   #define USE_BUZZER      0
@@ -99,6 +106,11 @@
 // T-Dongle C5 TFT display + RGB LED
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
   #include "c5_display.h"
+#endif
+
+// M5Stack Basic Core v2.7 — 320×240 IPS display via M5Unified
+#if defined(USE_M5BASIC)
+  #include "m5basic_display.h"
 #endif
 
 // ─── Hardware ────────────────────────────────────────────────────────────────
@@ -324,6 +336,12 @@ static unsigned long g_lastDecay  = 0;
 // While this is within DETECTION_RESCORE_MS, score decay is suppressed
 // so the LED keeps alerting until the device actually disappears.
 static unsigned long g_stickySeen = 0;
+
+// Detection tracking for m5basic_display — always compiled (tiny: ~50 bytes).
+// Updated by mbeDetTrack() which is called from CHECK_DET.
+static char     g_mbeLastDet[32]  = {0};
+static int8_t   g_mbeLastRssi     = -100;
+static uint32_t g_mbeTotalEvents  = 0;
 
 // ─── Device persistence tracker ──────────────────────────────────────────────
 #define MAX_TRACKED 50
@@ -590,6 +608,15 @@ static bool ssidHas(const char* ssid, const char** kws) {
     return false;
 }
 
+// ─── Detection tracking helper ────────────────────────────────────────────────
+// Records last-fired detection type/RSSI for m5basic_display.
+// Compiled unconditionally (tiny); called from CHECK_DET.
+static inline void mbeDetTrack(const char* tag, int8_t rssi) {
+    strncpy(g_mbeLastDet, tag, 31); g_mbeLastDet[31] = '\0';
+    g_mbeLastRssi = rssi;
+    g_mbeTotalEvents++;
+}
+
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 static void addScore(int pts, unsigned long now, unsigned long* ts, const char* tag) {
     if (now - *ts < DETECTION_RESCORE_MS) return;
@@ -684,6 +711,7 @@ static void processBLE() {
         g_##name##Det = false; \
         g_##name##Count++; \
         g_stickySeen = now; \
+        mbeDetTrack(tag, (int8_t)g_##name##Rssi); \
         if (g_##name##Count == 1 || now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
             g_##name##LoggedAt = now; \
             Serial.printf("[eyespy] " tag "  RSSI=%d  #%u\n", \
@@ -752,6 +780,17 @@ static void updateLED() {
         c5DisplayScore(g_score, nullptr, ph);
     }
 #endif
+#if defined(USE_M5BASIC)
+    {
+        const char* ph2 = (g_phase==PHASE_BLE) ? "BLE" :
+                          (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
+        m5basicUpdate(g_score,
+                      g_mbeLastDet[0] ? g_mbeLastDet : nullptr,
+                      g_mbeLastRssi, ph2,
+                      g_stickySeen ? millis() - g_stickySeen : 0UL,
+                      (int)g_trackedCount, g_mbeTotalEvents);
+    }
+#endif
 }
 
 // ─── Status print ─────────────────────────────────────────────────────────────
@@ -790,6 +829,11 @@ void setup() {
 
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
     c5DisplayInit();
+#endif
+#if defined(USE_M5BASIC)
+    // M5Unified init (display splash, speaker, buttons). Must precede NimBLE and WiFi init.
+    m5basicInit();
+    Serial.println("[eyespy] M5Stack Basic ready");
 #endif
 
 #if USE_LED
@@ -939,5 +983,25 @@ void loop() {
     updateLED();
     printStatus();
     purgeTracked();
+#if defined(USE_M5BASIC)
+    {
+        int btn = m5basicButtonTick();
+        if (btn == 1) {
+            // A: reset score
+            g_score = 0; g_stickySeen = 0;
+            memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet));
+            g_mbeLastRssi = -100;
+            Serial.println("[eyespy] Score reset (Btn A)");
+        } else if (btn == 3) {
+            // C: force scan restart
+            if (g_pScan && g_pScan->isScanning()) g_pScan->stop();
+            promiscStop();
+            WiFi.disconnect(true); delay(50);
+            g_phase = PHASE_WIFI_SCAN; g_phaseStart = millis();
+            Serial.println("[eyespy] Forced scan (Btn C)");
+        }
+        // btn==2 (brightness) handled inside m5basicButtonTick()
+    }
+#endif
     delay(10);
 }
