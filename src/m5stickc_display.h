@@ -52,6 +52,11 @@ static char    msce_lastDet[32] = {0};
 static int8_t  msce_lastRssi    = -100;
 static char    msce_lastPhase[12]={0};
 static bool    msce_needsRedraw = true;
+// Timestamp of the last actual redraw — forces a periodic (~1 Hz) repaint
+// even when score/lastDet/phase/lastRssi are unchanged, so the "Last alert:
+// X ago" clock visibly ticks instead of appearing frozen between phase
+// transitions (BLE→WIFI→PROMISC, which can be many seconds apart).
+static unsigned long msce_lastDrawMs = 0;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -195,13 +200,16 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
                             const char* phase, unsigned long lastAlertMs,
                             int trackedCount, uint32_t totalEvents) {
     int lvl = msce_level(score);
+    bool stale = (millis() - msce_lastDrawMs) >= 1000;
     bool chg = msce_needsRedraw
             || (score != msce_lastScore)
             || (lastDet && strcmp(lastDet, msce_lastDet) != 0)
             || (phase   && strcmp(phase,   msce_lastPhase) != 0)
-            || (lastRssi != msce_lastRssi);
+            || (lastRssi != msce_lastRssi)
+            || stale;
     if (!chg) return;
 
+    msce_lastDrawMs = millis();
     msce_lastScore = score;
     if (lastDet) { strncpy(msce_lastDet,   lastDet, 31); msce_lastDet[31]   = '\0'; }
     if (phase)   { strncpy(msce_lastPhase, phase,   11); msce_lastPhase[11] = '\0'; }

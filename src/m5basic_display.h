@@ -65,6 +65,11 @@ static bool    mbe_needsRedraw  = true;
 // Alternate display mode toggled by Btn B (brightness cycle skipped — see below)
 // mbe_altMode: 0 = main view, 1 = detection history placeholder
 static uint8_t mbe_altMode      = 0;
+// Timestamp of the last actual redraw — used to force a periodic (~1 Hz)
+// repaint even when score/lastDet/phase/lastRssi are unchanged, so the
+// "Last alert: X ago" clock visibly ticks instead of appearing frozen
+// between phase transitions (BLE→WIFI→PROMISC, which can be many seconds apart).
+static unsigned long mbe_lastDrawMs = 0;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -271,13 +276,16 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     int lvl = mbe_level(score);
 
     // Only redraw if meaningful state changed
+    bool stale = (millis() - mbe_lastDrawMs) >= 1000;
     bool changed = mbe_needsRedraw
                  || (score != mbe_lastScore)
                  || (lastDet && strcmp(lastDet, mbe_lastDet) != 0)
                  || (phase   && strcmp(phase,   mbe_lastPhase) != 0)
-                 || (lastRssi != mbe_lastRssi);
+                 || (lastRssi != mbe_lastRssi)
+                 || stale;
     if (!changed) return;
 
+    mbe_lastDrawMs = millis();
     mbe_lastScore = score;
     if (lastDet) { strncpy(mbe_lastDet,   lastDet, 31); mbe_lastDet[31]   = '\0'; }
     if (phase)   { strncpy(mbe_lastPhase, phase,   11); mbe_lastPhase[11] = '\0'; }
