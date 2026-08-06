@@ -68,6 +68,12 @@
 #include <cstring>
 #include <cctype>
 
+// Core2 For AWS has the same 320×240 ILI9342C display and M5Unified API as Basic.
+// Map USE_M5CORE2_AWS → USE_M5BASIC so all existing display guards work.
+#if defined(USE_M5CORE2_AWS) && !defined(USE_M5BASIC)
+  #define USE_M5BASIC 1
+#endif
+
 // ─── Platform feature selection ──────────────────────────────────────────────
 #if defined(ATOM_ECHO)
   #define USE_LED         0
@@ -87,11 +93,17 @@
   #define USE_M5_SPEAKER  0
   #define USE_C5_DISPLAY  1
 #elif defined(USE_M5BASIC)
-  // M5Stack Basic Core v2.7 — ILI9342C 320×240 IPS + 1W speaker + 3 buttons
-  // M5Unified handles all hardware. Init in m5basicInit() called from setup().
-  // USE_M5_SPEAKER=0 avoids double-init — the existing M5.begin() block is skipped.
+  // M5Stack Basic Core v2.7 / Core2 For AWS (aliased above)
   #define USE_LED         0
   #define USE_BUZZER      0
+  #define USE_M5_SPEAKER  0
+#elif defined(USE_M5STICKC_PLUS_SE)
+  // M5StickC Plus SE — passive buzzer G2, two buttons A/B
+  // M5Unified used for display (ST7789v2+AXP192); speaker disabled (no NS4168).
+  // USE_BUZZER=1 → tone(2,...) for alerts; startup tones via existing USE_BUZZER block.
+  #define USE_LED         0
+  #define USE_BUZZER      1
+  #define BUZZER_PIN      2
   #define USE_M5_SPEAKER  0
 #else
   #define USE_LED         1
@@ -108,9 +120,14 @@
   #include "c5_display.h"
 #endif
 
-// M5Stack Basic Core v2.7 — 320×240 IPS display via M5Unified
+// M5Stack Basic Core v2.7 / Core2 For AWS — 320×240 IPS display via M5Unified
 #if defined(USE_M5BASIC)
   #include "m5basic_display.h"
+#endif
+
+// M5StickC Plus SE — 1.14" ST7789v2 display (240×135 landscape)
+#if defined(USE_M5STICKC_PLUS_SE)
+  #include "m5stickc_display.h"
 #endif
 
 // ─── Hardware ────────────────────────────────────────────────────────────────
@@ -791,6 +808,17 @@ static void updateLED() {
                       (int)g_trackedCount, g_mbeTotalEvents);
     }
 #endif
+#if defined(USE_M5STICKC_PLUS_SE)
+    {
+        const char* ph3 = (g_phase==PHASE_BLE) ? "BLE" :
+                          (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
+        m5stickcUpdate(g_score,
+                       g_mbeLastDet[0] ? g_mbeLastDet : nullptr,
+                       g_mbeLastRssi, ph3,
+                       g_stickySeen ? millis() - g_stickySeen : 0UL,
+                       (int)g_trackedCount, g_mbeTotalEvents);
+    }
+#endif
 }
 
 // ─── Status print ─────────────────────────────────────────────────────────────
@@ -831,9 +859,15 @@ void setup() {
     c5DisplayInit();
 #endif
 #if defined(USE_M5BASIC)
-    // M5Unified init (display splash, speaker, buttons). Must precede NimBLE and WiFi init.
+    // M5Unified init (display splash, speaker/touch, buttons). Must precede NimBLE and WiFi.
     m5basicInit();
-    Serial.println("[eyespy] M5Stack Basic ready");
+    Serial.println("[eyespy] M5Stack Basic/Core2 ready");
+#endif
+#if defined(USE_M5STICKC_PLUS_SE)
+    // M5Unified init for display (AXP192 backlight) + button detection.
+    // Speaker disabled — passive buzzer G2 driven by tone() after this.
+    m5stickcInit();
+    Serial.println("[eyespy] M5StickC Plus SE ready");
 #endif
 
 #if USE_LED
@@ -987,20 +1021,30 @@ void loop() {
     {
         int btn = m5basicButtonTick();
         if (btn == 1) {
-            // A: reset score
             g_score = 0; g_stickySeen = 0;
-            memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet));
-            g_mbeLastRssi = -100;
+            memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet)); g_mbeLastRssi = -100;
             Serial.println("[eyespy] Score reset (Btn A)");
         } else if (btn == 3) {
-            // C: force scan restart
             if (g_pScan && g_pScan->isScanning()) g_pScan->stop();
-            promiscStop();
-            WiFi.disconnect(true); delay(50);
+            promiscStop(); WiFi.disconnect(true); delay(50);
             g_phase = PHASE_WIFI_SCAN; g_phaseStart = millis();
             Serial.println("[eyespy] Forced scan (Btn C)");
         }
-        // btn==2 (brightness) handled inside m5basicButtonTick()
+    }
+#endif
+#if defined(USE_M5STICKC_PLUS_SE)
+    {
+        int btn = m5stickcButtonTick();
+        if (btn == 1) {
+            g_score = 0; g_stickySeen = 0;
+            memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet)); g_mbeLastRssi = -100;
+            Serial.println("[eyespy] Score reset (Btn A)");
+        } else if (btn == 3) {
+            if (g_pScan && g_pScan->isScanning()) g_pScan->stop();
+            promiscStop(); WiFi.disconnect(true); delay(50);
+            g_phase = PHASE_WIFI_SCAN; g_phaseStart = millis();
+            Serial.println("[eyespy] Forced scan (Btn B)");
+        }
     }
 #endif
     delay(10);
