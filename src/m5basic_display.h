@@ -342,8 +342,11 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
                            int trackedCount, uint32_t totalEvents) {
     int lvl = mbe_level(score);
 
-    // Only redraw if meaningful state changed
-    bool stale = (millis() - mbe_lastDrawMs) >= 1000;
+    // Only redraw if meaningful state changed.
+    // Redraw at ~4Hz (was 1Hz) so the runtime clock / status feel genuinely
+    // real-time rather than visibly ticking once per second.
+    bool stale = (millis() - mbe_lastDrawMs) >= 250;
+
     bool changed = mbe_needsRedraw
                  || (score != mbe_lastScore)
                  || (lastDet && strcmp(lastDet, mbe_lastDet) != 0)

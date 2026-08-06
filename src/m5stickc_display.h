@@ -200,7 +200,10 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
                             const char* phase, unsigned long lastAlertMs,
                             int trackedCount, uint32_t totalEvents) {
     int lvl = msce_level(score);
-    bool stale = (millis() - msce_lastDrawMs) >= 1000;
+    // Redraw at ~4Hz (was 1Hz) so the runtime clock / status feel genuinely
+    // real-time rather than visibly ticking once per second.
+    bool stale = (millis() - msce_lastDrawMs) >= 250;
+
     bool chg = msce_needsRedraw
             || (score != msce_lastScore)
             || (lastDet && strcmp(lastDet, msce_lastDet) != 0)
