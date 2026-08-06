@@ -71,7 +71,52 @@ static uint8_t mbe_altMode      = 0;
 // between phase transitions (BLE→WIFI→PROMISC, which can be many seconds apart).
 static unsigned long mbe_lastDrawMs = 0;
 
+// ── Core2 For AWS: non-blocking vibration state machine ───────────────────────
+// Previously the alert vibration used delay() directly inside m5basicUpdate(),
+// which blocks the ENTIRE loop() — button polling, screen redraws, BLE/WiFi
+// scan phase transitions — for up to ~1.15s per threshold crossing.  This
+// tick-based state machine reproduces the identical on/off pulse pattern
+// using millis() timing instead of delay(), so m5basicVibrationTick() (called
+// every loop() iteration) never blocks anything.
+#if defined(USE_M5CORE2_AWS)
+static uint8_t       mbe_vibPattern  = 0;      // 0=idle 1=alert(2x strong) 2=caution(1x med)
+static uint8_t       mbe_vibStep     = 0;      // pulse index within the pattern
+static bool          mbe_vibOn       = false;  // true while motor is currently energised
+static unsigned long mbe_vibNextMs   = 0;      // millis() timestamp of next state change
+#endif
+
+// ── Serial-mirror log strip ───────────────────────────────────────────────────
+// Shows the last few lines of key [eyespy] status/detection text directly on
+// the screen so an operator can see live activity without a USB-serial
+// console attached.  Fed by mbe_logAdd(), called from a couple of high-value
+// call sites in main.cpp (printStatus() + the per-engine detection macro).
+#define MBE_LOG_LINES    3
+#define MBE_LOG_LINE_LEN 53   // ~320px / 6px-per-char at text size 1
+static char mbe_logBuf[MBE_LOG_LINES][MBE_LOG_LINE_LEN];
+
+// Appends text to the on-screen log ring buffer.  Splits on embedded '\n' so
+// a single call — which may itself contain a trailing/embedded newline —
+// becomes one or more ring entries, newest first.
+static void mbe_logAdd(const char* text) {
+    if (!text || !text[0]) return;
+    const char* p = text;
+    while (*p) {
+        const char* nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0) {
+            size_t n = (len < (size_t)(MBE_LOG_LINE_LEN - 1)) ? len : (size_t)(MBE_LOG_LINE_LEN - 1);
+            for (int i = MBE_LOG_LINES - 1; i > 0; i--)
+                memcpy(mbe_logBuf[i], mbe_logBuf[i - 1], MBE_LOG_LINE_LEN);
+            memcpy(mbe_logBuf[0], p, n);
+            mbe_logBuf[0][n] = '\0';
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
 
 static void mbe_fmtMs(unsigned long ms, char* buf, size_t len) {
     unsigned long s = ms / 1000;
@@ -218,6 +263,23 @@ static void mbe_scoreBar(int y, int score) {
     M5.Display.fillRect(8 + f, y, (MBE_W-16) - f,   12, MBE_DK_GREY);
 }
 
+// Draws the reserved on-screen serial-mirror log strip.  Called just before
+// the button bar in m5basicUpdate() — the region is 24px tall, ending
+// exactly at MBE_BTN_Y, so it never overlaps the button bar.
+static void mbe_drawLogStrip() {
+    int y0 = MBE_BTN_Y - 24;
+    M5.Display.fillRect(0, y0, MBE_W, 24, MBE_BLACK);
+    mbe_hline(y0, MBE_DK_GREY);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(0x4A69, MBE_BLACK);   // dim slate
+    int ly = y0 + 3;
+    for (int i = MBE_LOG_LINES - 1; i >= 0; i--) {
+        M5.Display.setCursor(2, ly);
+        M5.Display.print(mbe_logBuf[i]);
+        ly += 7;
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // Called once in setup()
@@ -229,9 +291,14 @@ static void m5basicInit() {
 
     M5.Speaker.setVolume(200);
 
-    // Core2 For AWS: 3 startup pulses to confirm vibration motor
+    // Core2 For AWS: 3 startup pulses to confirm vibration motor, and
+    // configure the touchscreen "virtual button" strip so M5Unified maps
+    // taps in the bottom MBE_BTN_H px into BtnA/BtnB/BtnC — without this call
+    // M5Unified's internal touch-button height defaults to 0 and touches in
+    // the [A][B][C] bar never register as button presses at all.
 #if defined(USE_M5CORE2_AWS)
     for(int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
+    M5.setTouchButtonHeight(MBE_BTN_H);
 #endif
 
     M5.Display.setBrightness(mbe_brightness);
@@ -326,7 +393,7 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     M5.Display.printf("Phase: %-8s  Tracked: %d", phase ? phase : "?", trackedCount);
     y += 13;
 
-    mbe_hline(y); y += 7;
+    mbe_hline(y); y += 5;
 
     // Last detection
     if (mbe_lastDet[0]) {
@@ -363,7 +430,7 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
         y += 13;
     }
 
-    mbe_hline(y); y += 7;
+    mbe_hline(y); y += 5;
 
     // Time since last alert
     M5.Display.setTextSize(1);
@@ -387,33 +454,30 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
     M5.Display.setCursor(8, y);
     M5.Display.printf("Total events: %lu  |  Score decay: 60s", (unsigned long)totalEvents);
-    y += 16;
+    y += 12;
 
     // Score bar
-    mbe_hline(y); y += 7;
+    mbe_hline(y); y += 5;
     mbe_scoreBar(y, score);
-    y += 18;
+    y += 14;
 
-    // Cooldown note
-    M5.Display.setTextColor(MBE_DK_GREY | 0x1000, MBE_BLACK); // slightly brighter dark
-    M5.Display.setCursor(8, y);
-    M5.Display.print("Re-score cooldown: 120s per engine");
+    // Serial-mirror log strip (24px, reserved immediately above the button bar)
+    mbe_drawLogStrip();
 
     // Button bar
     mbe_btnBar("RESET", "BRIGHT", "SCAN");
 
-    // Core2 For AWS: vibrate when score crosses ALERT or CAUTION threshold
+    // Core2 For AWS: vibration alert — non-blocking. Triggers the pattern;
+    // m5basicVibrationTick() (called every loop() iteration) steps it using
+    // millis() timing instead of delay(), so this never blocks button
+    // polling, screen redraws, or BLE/WiFi scan phase transitions.
 #if defined(USE_M5CORE2_AWS)
     {
         static int mbe_prevScore = 0;
         if (score >= 6 && mbe_prevScore < 6) {
-            // Two strong pulses = new ALERT
-            M5.Power.setVibration(255); delay(500); M5.Power.setVibration(0);
-            delay(150);
-            M5.Power.setVibration(255); delay(500); M5.Power.setVibration(0);
+            mbe_vibPattern = 1; mbe_vibStep = 0; mbe_vibOn = false; mbe_vibNextMs = millis();
         } else if (score >= 3 && mbe_prevScore < 3) {
-            // One medium pulse = entering CAUTION
-            M5.Power.setVibration(200); delay(400); M5.Power.setVibration(0);
+            mbe_vibPattern = 2; mbe_vibStep = 0; mbe_vibOn = false; mbe_vibNextMs = millis();
         }
         mbe_prevScore = score;
     }
@@ -440,6 +504,35 @@ static int m5basicButtonTick() {
     }
     return 0;
 }
+
+#if defined(USE_M5CORE2_AWS)
+// ── Vibration tick ────────────────────────────────────────────────────────────
+// Call every loop() iteration (Core2 only). Steps the vibration pattern set
+// by m5basicUpdate() using millis()-based timing instead of delay(), so the
+// rest of loop() (buttons, screen, BLE/WiFi) never blocks.
+static void m5basicVibrationTick() {
+    if (mbe_vibPattern == 0) return;
+    unsigned long now = millis();
+    if ((long)(now - mbe_vibNextMs) < 0) return;
+
+    const int totalPulses = (mbe_vibPattern == 1) ? 2 : 1;
+    const uint8_t vibLevel = (mbe_vibPattern == 1) ? 255 : 200;
+    const unsigned long onMs  = (mbe_vibPattern == 1) ? 500 : 400;
+    const unsigned long offMs = 150;
+
+    if (!mbe_vibOn) {
+        if (mbe_vibStep >= totalPulses) { mbe_vibPattern = 0; M5.Power.setVibration(0); return; }
+        M5.Power.setVibration(vibLevel);
+        mbe_vibOn = true;
+        mbe_vibNextMs = now + onMs;
+    } else {
+        M5.Power.setVibration(0);
+        mbe_vibOn = false;
+        mbe_vibStep++;
+        mbe_vibNextMs = now + offMs;
+    }
+}
+#endif
 
 // ── Audio helpers ─────────────────────────────────────────────────────────────
 static inline void m5basicBeep(uint32_t hz, uint32_t ms) {

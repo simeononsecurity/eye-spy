@@ -672,6 +672,21 @@ static inline void mbeDetTrack(const char* tag, int8_t rssi) {
     g_mbeTotalEvents++;
 }
 
+// Mirrors a detection-engine log line onto the M5Basic/Core2 on-screen log
+// strip (no-op on boards without USE_M5BASIC).  Kept as a macro (not a
+// function) so it can be used inside the CHECK_DET() macro below, which is
+// itself expanded inside processBLE() — a plain function call would work
+// too, but the macro form avoids an extra forward declaration here.
+#if defined(USE_M5BASIC)
+  #define IF_M5BASIC_LOG(tag, rssi, cnt) do { \
+      char _mbeLine[64]; \
+      snprintf(_mbeLine, sizeof(_mbeLine), tag "  RSSI=%d  #%u", (int)(rssi), (unsigned)(cnt)); \
+      mbe_logAdd(_mbeLine); \
+  } while (0)
+#else
+  #define IF_M5BASIC_LOG(tag, rssi, cnt) do {} while (0)
+#endif
+
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 static void addScore(int pts, unsigned long now, unsigned long* ts, const char* tag) {
     if (now - *ts < DETECTION_RESCORE_MS) return;
@@ -771,6 +786,7 @@ static void processBLE() {
             g_##name##LoggedAt = now; \
             Serial.printf("[eyespy] " tag "  RSSI=%d  #%u\n", \
                           (int)g_##name##Rssi, (unsigned)g_##name##Count); \
+            IF_M5BASIC_LOG(tag, (int)g_##name##Rssi, (unsigned)g_##name##Count); \
         } \
         addScore(pts, now, &g_##name##Scored, tag); \
     }
@@ -871,7 +887,17 @@ static void printStatus() {
                      (g_score>=SCORE_CAUTION) ? "CAUTION" : "CLEAR";
     Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d\n",
                   g_score, st, ph, (int)g_trackedCount);
+#if defined(USE_M5BASIC)
+    {
+        char _mbeStatusLine[64];
+        snprintf(_mbeStatusLine, sizeof(_mbeStatusLine),
+                 "status score=%d %s phase=%s tracked=%d",
+                 g_score, st, ph, (int)g_trackedCount);
+        mbe_logAdd(_mbeStatusLine);
+    }
+#endif
 }
+
 
 // ─── Purge stale tracked ──────────────────────────────────────────────────────
 static void purgeTracked() {
@@ -1085,7 +1111,11 @@ void loop() {
         }
     }
 #endif
+#if defined(USE_M5CORE2_AWS)
+    m5basicVibrationTick();
+#endif
 #if defined(USE_M5STICKC_PLUS_SE)
+
     {
         int btn = m5stickcButtonTick();
         if (btn == 1) {
