@@ -103,6 +103,13 @@ static void msce_scoreBar(int y, int score) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+// ── Red LED (G10, active LOW) ──────────────────────────────────────────────
+static bool msce_ledInit = false;
+static void msce_setLED(bool on) {
+    if (!msce_ledInit) { pinMode(10, OUTPUT); msce_ledInit = true; }
+    digitalWrite(10, on ? LOW : HIGH);  // active LOW
+}
+
 // Called once from setup()
 static void m5stickcInit() {
     auto cfg = M5.config();
@@ -110,6 +117,9 @@ static void m5stickcInit() {
     cfg.internal_rtc = false;
     cfg.internal_spk = false;   // SE has passive buzzer G2, NOT NS4168 I2S — prevent GPIO2 conflict
     M5.begin(cfg);
+
+    // Init red LED — brief blink to confirm hardware
+    msce_setLED(true); delay(120); msce_setLED(false);
 
     M5.Display.setRotation(3);  // landscape: 240w × 135h
     M5.Display.setBrightness(msce_brightness);
@@ -216,6 +226,21 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
     msce_scoreBar(y, score);
 
     msce_btnBar("RESET", "SCAN");
+
+    // Red LED G10: mirrors threat level
+    //   CLEAR   → LED off
+    //   CAUTION → slow single blink
+    //   ALERT   → LED solid red
+    if (score >= 6) {
+        msce_setLED(true);   // solid red
+    } else if (score >= 3) {
+        // Single blink for caution (only when level just changed)
+        if (lvl != msce_level(msce_lastScore)) {
+            msce_setLED(true); delay(100); msce_setLED(false);
+        }
+    } else {
+        msce_setLED(false);
+    }
 }
 
 // ── Button tick ───────────────────────────────────────────────────────────────

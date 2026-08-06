@@ -148,6 +148,11 @@ static void m5basicInit() {
 
     M5.Speaker.setVolume(200);
 
+    // Core2 For AWS: short startup vibration to confirm hardware is working
+#if defined(USE_M5CORE2_AWS)
+    M5.Power.setVibration(180); delay(150); M5.Power.setVibration(0);
+#endif
+
     M5.Display.setBrightness(mbe_brightness);
     M5.Display.fillScreen(MBE_BLACK);
 
@@ -300,6 +305,23 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
 
     // Button bar
     mbe_btnBar("RESET", "BRIGHT", "SCAN");
+
+    // Core2 For AWS: vibrate when score crosses ALERT or CAUTION threshold
+#if defined(USE_M5CORE2_AWS)
+    {
+        static int mbe_prevScore = 0;
+        if (score >= 6 && mbe_prevScore < 6) {
+            // Two short pulses = new ALERT
+            M5.Power.setVibration(200); delay(150); M5.Power.setVibration(0);
+            delay(80);
+            M5.Power.setVibration(200); delay(150); M5.Power.setVibration(0);
+        } else if (score >= 3 && mbe_prevScore < 3) {
+            // One short pulse = entering CAUTION
+            M5.Power.setVibration(150); delay(100); M5.Power.setVibration(0);
+        }
+        mbe_prevScore = score;
+    }
+#endif
 }
 
 // ── Button tick ───────────────────────────────────────────────────────────────
