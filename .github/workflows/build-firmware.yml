@@ -48,6 +48,9 @@ jobs:
           -e atom-echo
           -e atom-voice
           -e esp32dev
+          -e m5stack-basic
+          -e m5stack-core2-aws
+          -e m5stickc-plus-se
 
       # Verify required build artifacts
       - name: Verify build artifacts
@@ -58,7 +61,7 @@ jobs:
           ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
 
           # Required envs - failure here blocks deploy
-          for env in atom-lite atom-echo atom-voice esp32dev; do
+          for env in atom-lite atom-echo atom-voice esp32dev m5stack-basic m5stack-core2-aws m5stickc-plus-se; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -90,7 +93,7 @@ jobs:
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
           # Required environments
-          for env in atom-lite atom-echo atom-voice esp32dev; do
+          for env in atom-lite atom-echo atom-voice esp32dev m5stack-basic m5stack-core2-aws m5stickc-plus-se; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -138,10 +141,13 @@ jobs:
           MANIFEST
           }
 
-          gen_manifest "atom-lite"  "Eye Spy -- M5Atom Lite"
-          gen_manifest "atom-echo"  "Eye Spy -- M5Atom Echo"
-          gen_manifest "atom-voice" "Eye Spy -- M5Atom Voice"
-          gen_manifest "esp32dev"   "Eye Spy -- Generic ESP32 DevKit"
+          gen_manifest "atom-lite"          "Eye Spy -- M5Atom Lite"
+          gen_manifest "atom-echo"          "Eye Spy -- M5Atom Echo"
+          gen_manifest "atom-voice"         "Eye Spy -- M5Atom Voice"
+          gen_manifest "esp32dev"           "Eye Spy -- Generic ESP32 DevKit"
+          gen_manifest "m5stack-basic"      "Eye Spy -- M5Stack Basic Core v2.7"
+          gen_manifest "m5stack-core2-aws"  "Eye Spy -- M5Stack Core2 For AWS"
+          gen_manifest "m5stickc-plus-se"   "Eye Spy -- M5StickC Plus SE"
 
           # ESP32-C5 manifest -- only generate if firmware was built
           if [ -d "site/firmware/lilygo-t-dongle-c5" ]; then
