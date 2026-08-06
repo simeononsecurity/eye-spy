@@ -126,6 +126,57 @@ static void mbe_btnBar(const char* a, const char* b, const char* c) {
     M5.Display.setCursor(212, MBE_BTN_Y + 9); M5.Display.print(buf);
 }
 
+// ── RSSI signal-strength helpers ──────────────────────────────────────────────
+
+static const char* mbe_rssiLabel(int8_t r) {
+    if (r > -55) return "STRONG";
+    if (r > -65) return "GOOD";
+    if (r > -75) return "FAIR";
+    if (r > -85) return "WEAK";
+    return "POOR";
+}
+static uint16_t mbe_rssiColor(int8_t r) {
+    if (r > -55) return MBE_GREEN;
+    if (r > -65) return 0x37E0;
+    if (r > -75) return MBE_YELLOW;
+    if (r > -85) return MBE_ORANGE;
+    return MBE_RED;
+}
+static int mbe_rssiBars(int8_t r) {
+    if (r > -55) return 5;
+    if (r > -65) return 4;
+    if (r > -75) return 3;
+    if (r > -85) return 2;
+    return 1;
+}
+// Draw WiFi bars + label + dBm at (x,y); total height 22px
+static void mbe_drawSignal(int x, int y, int8_t rssi) {
+    int nb = mbe_rssiBars(rssi);
+    uint16_t col = mbe_rssiColor(rssi);
+    for (int i = 0; i < 5; i++) {
+        int bh = (i+1)*4; int bx = x+i*8; int by = y+(22-bh);
+        M5.Display.fillRect(bx, by, 6, bh, (i < nb) ? col : MBE_DK_GREY);
+    }
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(col, MBE_BLACK);
+    M5.Display.setCursor(x+46, y+8);
+    M5.Display.print(mbe_rssiLabel(rssi));
+    M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
+    M5.Display.setCursor(x+46+7*6, y+8);
+    M5.Display.printf("  %d dBm", (int)rssi);
+}
+// RSSI trend history (last 6 readings)
+#define MBE_HIST 6
+static int8_t  mbe_rH[MBE_HIST] = {0};
+static uint8_t mbe_rI = 0;
+static bool    mbe_rF = false;
+static void mbe_rPush(int8_t r){mbe_rH[mbe_rI]=r;mbe_rI=(mbe_rI+1)%MBE_HIST;if(mbe_rI==0)mbe_rF=true;}
+static int mbe_rTrend(){
+    int c=mbe_rF?MBE_HIST:(int)mbe_rI; if(c<3)return 0;
+    int8_t o=mbe_rH[(mbe_rI+MBE_HIST-c)%MBE_HIST], n=mbe_rH[(mbe_rI+MBE_HIST-1)%MBE_HIST];
+    int d=(int)n-(int)o; return(d>=5)?1:(d<=-5)?-1:0;
+}
+
 // Score bar across the full content width
 static void mbe_scoreBar(int y, int score) {
     // max practical score before clamp display: 20
@@ -148,9 +199,9 @@ static void m5basicInit() {
 
     M5.Speaker.setVolume(200);
 
-    // Core2 For AWS: short startup vibration to confirm hardware is working
+    // Core2 For AWS: 3 startup pulses to confirm vibration motor
 #if defined(USE_M5CORE2_AWS)
-    M5.Power.setVibration(180); delay(150); M5.Power.setVibration(0);
+    for(int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
 #endif
 
     M5.Display.setBrightness(mbe_brightness);
@@ -254,11 +305,19 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
         M5.Display.print(det);
         y += 22;
 
-        M5.Display.setTextSize(1);
-        M5.Display.setTextColor(MBE_WHITE, MBE_BLACK);
-        M5.Display.setCursor(8, y);
-        M5.Display.printf("RSSI: %d dBm", (int)lastRssi);
-        y += 13;
+        // Signal strength bars + trend arrow
+        mbe_rPush(lastRssi);
+        mbe_drawSignal(8, y+3, lastRssi);
+        {
+            int tr=mbe_rTrend();
+            const char* ta=(tr>0)?"\xe2\x86\x91":(tr<0)?"\xe2\x86\x93":"\xe2\x86\x92";
+            const char* tl=(tr>0)?"APPROACHING":(tr<0)?"RECEDING":"STABLE";
+            uint16_t tc=(tr>0)?MBE_RED:(tr<0)?MBE_GREEN:MBE_GREY;
+            M5.Display.setTextColor(tc, MBE_BLACK);
+            M5.Display.setCursor(196, y+11);
+            M5.Display.printf("%s %s", ta, tl);
+        }
+        y += 28;
     } else {
         M5.Display.setTextSize(1);
         M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
@@ -311,13 +370,13 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     {
         static int mbe_prevScore = 0;
         if (score >= 6 && mbe_prevScore < 6) {
-            // Two short pulses = new ALERT
-            M5.Power.setVibration(200); delay(150); M5.Power.setVibration(0);
-            delay(80);
-            M5.Power.setVibration(200); delay(150); M5.Power.setVibration(0);
+            // Two strong pulses = new ALERT
+            M5.Power.setVibration(255); delay(500); M5.Power.setVibration(0);
+            delay(150);
+            M5.Power.setVibration(255); delay(500); M5.Power.setVibration(0);
         } else if (score >= 3 && mbe_prevScore < 3) {
-            // One short pulse = entering CAUTION
-            M5.Power.setVibration(150); delay(100); M5.Power.setVibration(0);
+            // One medium pulse = entering CAUTION
+            M5.Power.setVibration(200); delay(400); M5.Power.setVibration(0);
         }
         mbe_prevScore = score;
     }

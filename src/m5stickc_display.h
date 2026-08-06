@@ -93,6 +93,35 @@ static void msce_btnBar(const char* a, const char* b) {
     snprintf(buf,sizeof(buf),"[B]%-8s",b?b:"---");
     M5.Display.setCursor(122, MSCE_BTN_Y+5); M5.Display.print(buf);
 }
+// Compact RSSI helpers for 240×135 display
+static const char* msce_rssiLabel(int8_t r){
+    if(r>-55)return"STRONG"; if(r>-65)return"GOOD"; if(r>-75)return"FAIR"; if(r>-85)return"WEAK"; return"POOR";
+}
+static uint16_t msce_rssiColor(int8_t r){
+    if(r>-55)return MSCE_GREEN; if(r>-65)return 0x37E0; if(r>-75)return MSCE_YELLOW; if(r>-85)return MSCE_ORANGE; return MSCE_RED;
+}
+static int msce_rssiBars(int8_t r){
+    if(r>-55)return 5; if(r>-65)return 4; if(r>-75)return 3; if(r>-85)return 2; return 1;
+}
+// Compact 5-bar WiFi signal + label (height 15px)
+static void msce_drawSig(int x, int y, int8_t rssi) {
+    int nb=msce_rssiBars(rssi); uint16_t col=msce_rssiColor(rssi);
+    for(int i=0;i<5;i++){int bh=(i+1)*3;int bx=x+i*6;int by=y+(15-bh);M5.Display.fillRect(bx,by,5,bh,(i<nb)?col:MSCE_DK_GREY);}
+    M5.Display.setTextSize(1); M5.Display.setTextColor(col,MSCE_BLACK);
+    M5.Display.setCursor(x+34,y+4); M5.Display.print(msce_rssiLabel(rssi));
+    M5.Display.setTextColor(MSCE_LT_GREY,MSCE_BLACK);
+    M5.Display.setCursor(x+34+6*6,y+4); M5.Display.printf(" %ddBm",(int)rssi);
+}
+// RSSI trend (last 4 readings)
+#define MSCE_HIST 4
+static int8_t msce_rH[MSCE_HIST]={0}; static uint8_t msce_rI=0; static bool msce_rF=false;
+static void msce_rPush(int8_t r){msce_rH[msce_rI]=r;msce_rI=(msce_rI+1)%MSCE_HIST;if(msce_rI==0)msce_rF=true;}
+static int  msce_rTrend(){
+    int c=msce_rF?MSCE_HIST:(int)msce_rI; if(c<2)return 0;
+    int d=(int)msce_rH[(msce_rI+MSCE_HIST-1)%MSCE_HIST]-(int)msce_rH[(msce_rI+MSCE_HIST-c)%MSCE_HIST];
+    return(d>=4)?1:(d<=-4)?-1:0;
+}
+
 static void msce_scoreBar(int y, int score) {
     int pct = (score>20)?100:(score*100/20);
     uint16_t fill=(score>=6)?MSCE_RED:(score>=3)?MSCE_ORANGE:MSCE_GREEN;
@@ -197,9 +226,18 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
         M5.Display.setCursor(3, y);
         char det[26]; strncpy(det, msce_lastDet, 25); det[25]='\0';
         M5.Display.print(det); y += 11;
-        M5.Display.setTextColor(MSCE_WHITE, MSCE_BLACK);
-        M5.Display.setCursor(3, y);
-        M5.Display.printf("RSSI: %d dBm", (int)lastRssi); y += 11;
+        // Signal bars + trend arrow
+        msce_rPush(lastRssi);
+        msce_drawSig(3, y, lastRssi);
+        {
+            int tr=msce_rTrend();
+            const char* ta=(tr>0)?"\xe2\x86\x91":(tr<0)?"\xe2\x86\x93":"\xe2\x86\x92";
+            uint16_t tc=(tr>0)?MSCE_RED:(tr<0)?MSCE_GREEN:MSCE_GREY;
+            M5.Display.setTextColor(tc,MSCE_BLACK);
+            M5.Display.setCursor(3+130,y+4); M5.Display.printf("%s",(tr>0)?"APPROACHING":(tr<0)?"RECEDING":"STABLE");
+            M5.Display.print(ta);
+        }
+        y += 17;
     } else {
         M5.Display.setTextColor(MSCE_GREY, MSCE_BLACK);
         M5.Display.setCursor(3, y);
