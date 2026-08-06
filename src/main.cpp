@@ -141,6 +141,44 @@
 #endif
 #define BUTTON_PIN  39
 
+// ── Simple single-GPIO button support (Atom Lite/Echo/Voice, DevKit, T-Dongle C5) ──
+// M5Stack Basic/Core2 and M5StickC Plus SE get button handling through
+// M5Unified (M5.BtnA/B) inside their respective display headers — see
+// m5basicButtonTick()/m5stickcButtonTick() below.  Every other supported
+// board (Atom Lite/Echo/Voice, plain ESP32 DevKit, LILYGO T-Dongle C5) has
+// only a single bare GPIO button with no M5Unified Button_Class helper.
+// BUTTON_PIN/C5_BTN_PIN were previously #defined but never actually read
+// anywhere, so the button did nothing on these boards.  This wires up a
+// minimal debounced digitalRead() handler.
+#if defined(USE_M5BASIC) || defined(USE_M5STICKC_PLUS_SE)
+  // handled via M5Unified below — no simple-button wiring needed
+#elif defined(T_DONGLE_C5)
+  #define HAS_SIMPLE_BUTTON  1
+  #define SIMPLE_BUTTON_PIN  C5_BTN_PIN
+#else
+  #define HAS_SIMPLE_BUTTON  1
+  #define SIMPLE_BUTTON_PIN  BUTTON_PIN
+#endif
+
+#if defined(HAS_SIMPLE_BUTTON)
+static bool          simpleBtnLastState    = true;  // idle = HIGH (pulled up)
+static unsigned long simpleBtnLastChangeMs = 0;
+#define SIMPLE_BUTTON_DEBOUNCE_MS 50
+
+// Returns true exactly once per physical press (debounced falling edge).
+static bool simpleButtonPressed() {
+  bool cur = digitalRead(SIMPLE_BUTTON_PIN);
+  unsigned long now = millis();
+  if (cur != simpleBtnLastState && (now - simpleBtnLastChangeMs) > SIMPLE_BUTTON_DEBOUNCE_MS) {
+    simpleBtnLastChangeMs = now;
+    simpleBtnLastState    = cur;
+    if (!cur) return true;   // LOW == pressed
+  }
+  return false;
+}
+#endif
+
+
 // ─── Tuning ──────────────────────────────────────────────────────────────────
 #define RSSI_MIN               -90
 #define BLE_SCAN_DURATION_S      9
@@ -794,7 +832,7 @@ static void updateLED() {
     {
         const char* ph = (g_phase==PHASE_BLE) ? "BLE" :
                          (g_phase==PHASE_WIFI_SCAN) ? "WIFI" : "PROMISC";
-        c5DisplayScore(g_score, nullptr, ph);
+        c5DisplayScore(g_score, g_mbeLastDet[0] ? g_mbeLastDet : nullptr, ph, g_mbeLastRssi);
     }
 #endif
 #if defined(USE_M5BASIC)
@@ -862,13 +900,20 @@ void setup() {
     // M5Unified init (display splash, speaker/touch, buttons). Must precede NimBLE and WiFi.
     m5basicInit();
     Serial.println("[eyespy] M5Stack Basic/Core2 ready");
+    // Immediately replace the static splash with the live scanning screen so the
+    // display doesn't appear stuck on "Init..." while NimBLE/WiFi come up.
+    m5basicUpdate(0, nullptr, -100, "BLE", 0UL, 0, 0);
 #endif
 #if defined(USE_M5STICKC_PLUS_SE)
     // M5Unified init for display (AXP192 backlight) + button detection.
     // Speaker disabled — passive buzzer G2 driven by tone() after this.
     m5stickcInit();
     Serial.println("[eyespy] M5StickC Plus SE ready");
+    // Immediately replace the static splash with the live scanning screen so the
+    // display doesn't appear stuck on "Init..." while NimBLE/WiFi come up.
+    m5stickcUpdate(0, nullptr, -100, "BLE", 0UL, 0, 0);
 #endif
+
 
 #if USE_LED
     strip.begin();
@@ -876,6 +921,14 @@ void setup() {
     setLED(0, 0, 40);
 #endif
     pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+#if defined(HAS_SIMPLE_BUTTON)
+    // Single bare-GPIO button (Atom Lite/Echo/Voice, DevKit, T-Dongle C5).
+    // Previously #defined but never read anywhere — wire it up now.
+    pinMode(SIMPLE_BUTTON_PIN, INPUT_PULLUP);
+    simpleBtnLastState = digitalRead(SIMPLE_BUTTON_PIN);
+#endif
+
 
 #if USE_BUZZER
     pinMode(BUZZER_PIN, OUTPUT);
@@ -1047,5 +1100,26 @@ void loop() {
         }
     }
 #endif
+
+#if defined(HAS_SIMPLE_BUTTON)
+    // Single bare-GPIO button (Atom Lite/Echo/Voice, DevKit, T-Dongle C5).
+    // Press = reset score to 0 + force an immediate scan-cycle restart
+    // (mirrors the M5Basic Btn A + Btn C combined action) plus a short
+    // audible/visual acknowledgement.
+    if (simpleButtonPressed()) {
+        g_score = 0; g_stickySeen = 0;
+        memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet)); g_mbeLastRssi = -100;
+        if (g_pScan && g_pScan->isScanning()) g_pScan->stop();
+        promiscStop(); WiFi.disconnect(true); delay(50);
+        g_phase = PHASE_WIFI_SCAN; g_phaseStart = millis();
+        Serial.println("[eyespy] Score reset + forced scan (button)");
+        audioAlert(false);
+#if USE_LED
+        setLED(0, 0, 255); delay(80); setLED(0, 80, 0);
+#endif
+    }
+#endif
+
     delay(10);
 }
+

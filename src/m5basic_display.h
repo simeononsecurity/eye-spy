@@ -29,6 +29,8 @@
 #include <M5Unified.h>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
+
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
 static constexpr uint16_t MBE_BLACK    = 0x0000;
@@ -177,8 +179,31 @@ static int mbe_rTrend(){
     int d=(int)n-(int)o; return(d>=5)?1:(d<=-5)?-1:0;
 }
 
+// ── Distance estimate ("triangulation" proxy) ─────────────────────────────────
+// A single receiver cannot truly triangulate (needs 2+ simultaneous readers
+// at known positions) — but a free-space path-loss RSSI→distance estimate
+// gives the operator a practical sense of range and closing/receding trend.
+//   distance_m = 10 ^ ((TxPower - RSSI) / (10 * n))
+static float mbe_estimateDistanceM(int8_t rssi) {
+    const float txPowerAt1m = -40.0f;
+    const float pathLossExp = 2.0f;
+    float ratio = (txPowerAt1m - (float)rssi) / (10.0f * pathLossExp);
+    return powf(10.0f, ratio);
+}
+static void mbe_drawRange(int x, int y, int8_t rssi) {
+    float d = mbe_estimateDistanceM(rssi);
+    char buf[24];
+    if (d >= 1000.0f) snprintf(buf, sizeof(buf), "~%.1fkm est.", d / 1000.0f);
+    else if (d >= 10.0f) snprintf(buf, sizeof(buf), "~%.0fm est.", d);
+    else               snprintf(buf, sizeof(buf), "~%.1fm est.", d);
+    M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
+    M5.Display.setCursor(x, y);
+    M5.Display.print(buf);
+}
+
 // Score bar across the full content width
 static void mbe_scoreBar(int y, int score) {
+
     // max practical score before clamp display: 20
     int pct = (score > 20) ? 100 : (score * 100 / 20);
     uint16_t fillCol = (score >= 6) ? MBE_RED :
@@ -317,7 +342,11 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
             M5.Display.setCursor(196, y+11);
             M5.Display.printf("%s %s", ta, tl);
         }
-        y += 28;
+        y += 24;
+        // Estimated range ("triangulation" proxy) — free-space path-loss estimate
+        mbe_drawRange(8, y, lastRssi);
+        y += 13;
+
     } else {
         M5.Display.setTextSize(1);
         M5.Display.setTextColor(MBE_GREY, MBE_BLACK);

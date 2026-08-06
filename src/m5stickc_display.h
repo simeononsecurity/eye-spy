@@ -22,6 +22,7 @@
 #include <M5Unified.h>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
 static constexpr uint16_t MSCE_BLACK    = 0x0000;
@@ -121,6 +122,25 @@ static int  msce_rTrend(){
     int d=(int)msce_rH[(msce_rI+MSCE_HIST-1)%MSCE_HIST]-(int)msce_rH[(msce_rI+MSCE_HIST-c)%MSCE_HIST];
     return(d>=4)?1:(d<=-4)?-1:0;
 }
+
+// ── Distance estimate ("triangulation" proxy) ─────────────────────────────────
+static float msce_estimateDistanceM(int8_t rssi) {
+    const float txPowerAt1m = -40.0f;
+    const float pathLossExp = 2.0f;
+    float ratio = (txPowerAt1m - (float)rssi) / (10.0f * pathLossExp);
+    return powf(10.0f, ratio);
+}
+static void msce_drawRange(int x, int y, int8_t rssi) {
+    float d = msce_estimateDistanceM(rssi);
+    char buf[20];
+    if (d >= 1000.0f) snprintf(buf, sizeof(buf), "~%.1fkm", d / 1000.0f);
+    else if (d >= 10.0f) snprintf(buf, sizeof(buf), "~%.0fm", d);
+    else               snprintf(buf, sizeof(buf), "~%.1fm", d);
+    M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
+    M5.Display.setCursor(x, y);
+    M5.Display.print(buf);
+}
+
 
 static void msce_scoreBar(int y, int score) {
     int pct = (score>20)?100:(score*100/20);
@@ -238,6 +258,9 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
             M5.Display.print(ta);
         }
         y += 17;
+        // Estimated range ("triangulation" proxy)
+        msce_drawRange(3, y, lastRssi);
+        y += 11;
     } else {
         M5.Display.setTextColor(MSCE_GREY, MSCE_BLACK);
         M5.Display.setCursor(3, y);
