@@ -219,7 +219,16 @@ static uint8_t       g_chanIdx    = 0;
 static AppState      g_state      = STATE_STARTUP;
 static unsigned long g_startupMs  = 0;
 
+// ui_task.h: decoupled UI/display FreeRTOS task. Must come after es_confidence.h
+// (SCORE_ALERT/SCORE_CAUTION), led_neopixel.h (setLED), audioAlert(), and the
+// Tuning block (STARTUP_DURATION_MS/STARTUP_PULSE_MS/ALERT_FLASH_HALF_MS) —
+// all satisfied above this point — and after the display headers included
+// earlier (c5DisplayScore/m5basicUpdate/m5basicButtonTick/m5basicVibrationTick/
+// m5stickcUpdate/m5stickcButtonTick).
+#include "ui_task.h"
+
 // ─── WiFi promiscuous ─────────────────────────────────────────────────────────
+
 static const uint8_t NAN_DEST[6] = {0x51,0x6f,0x9a,0x01,0x00,0x00};
 
 static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
@@ -565,59 +574,21 @@ static void processBLE() {
 // tickDecay() now lives in es_confidence.h alongside the rest of the scoring engine.
 
 // ─── LED + audio update ───────────────────────────────────────────────────────
+// All the actual LED/audio/display work now happens on the dedicated UI task
+// (ui_task.h), running independently on its own FreeRTOS task/core so slow
+// SPI/I2C redraws never block or get blocked by the BLE/WiFi scan loop.
+// updateLED() just publishes a cheap snapshot of the latest scan-derived state
+// for that task to pick up on its own cadence (~20 Hz poll).
 static void updateLED() {
-    unsigned long now = millis();
-    static int    prevLevel = 0;
-
-    if (g_state == STATE_STARTUP) {
-        bool on = ((now / STARTUP_PULSE_MS) & 1) == 0;
-        setLED(0, 0, on ? 40 : 0); return;
-    }
-
-    int level = (g_score >= SCORE_ALERT) ? 2 :
-                (g_score >= SCORE_CAUTION) ? 1 : 0;
-
-    if (level > prevLevel) audioAlert(level >= 2);
-    prevLevel = level;
-
-    if (level >= 2) {
-        bool on = ((now / ALERT_FLASH_HALF_MS) & 1) == 0;
-        setLED(on ? 220 : 0, 0, 0);
-    } else if (level == 1) {
-        setLED(180, 60, 0);
-    } else {
-        setLED(0, 80, 0);
-    }
-#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
-    {
-        const char* ph = (g_phase==PHASE_BLE) ? "BLE" :
-                         (g_phase==PHASE_WIFI_SCAN) ? "WIFI" : "PROMISC";
-        c5DisplayScore(g_score, g_mbeLastDet[0] ? g_mbeLastDet : nullptr, ph, g_mbeLastRssi);
-    }
-#endif
-#if defined(USE_M5BASIC)
-    {
-        const char* ph2 = (g_phase==PHASE_BLE) ? "BLE" :
-                          (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
-        m5basicUpdate(g_score,
-                      g_mbeLastDet[0] ? g_mbeLastDet : nullptr,
-                      g_mbeLastRssi, ph2,
-                      g_stickySeen ? millis() - g_stickySeen : 0UL,
-                      (int)g_trackedCount, g_mbeTotalEvents);
-    }
-#endif
-#if defined(USE_M5STICKC_PLUS_SE)
-    {
-        const char* ph3 = (g_phase==PHASE_BLE) ? "BLE" :
-                          (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
-        m5stickcUpdate(g_score,
-                       g_mbeLastDet[0] ? g_mbeLastDet : nullptr,
-                       g_mbeLastRssi, ph3,
-                       g_stickySeen ? millis() - g_stickySeen : 0UL,
-                       (int)g_trackedCount, g_mbeTotalEvents);
-    }
-#endif
+    const char* ph = (g_phase==PHASE_BLE) ? "BLE" :
+                     (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
+    uiPublish(g_score,
+              g_mbeLastDet[0] ? g_mbeLastDet : nullptr,
+              g_mbeLastRssi, ph,
+              g_stickySeen ? millis() - g_stickySeen : 0UL,
+              (int)g_trackedCount, g_mbeTotalEvents);
 }
+
 
 // ─── Status print ─────────────────────────────────────────────────────────────
 static unsigned long g_lastStatus = 0;
@@ -753,11 +724,21 @@ void setup() {
     g_state      = STATE_STARTUP;
 
     startBLEScan();
+
+    // Start the decoupled UI/display task (ui_task.h) now that g_startupMs is
+    // set and every board/display header it depends on has been initialized
+    // above. From this point on, M5Unified/display-object access (drawing,
+    // M5.update(), button reads, vibration) happens ONLY on that task — never
+    // again from loop()/scan code — so the scan loop's delay()s never stall
+    // the UI, and slow SPI/I2C redraws never stall BLE/WiFi scanning.
+    startUiTask();
+
     Serial.printf("[eyespy] init OK  flock_ouis=%u  mfr_ouis=%u  st_ouis=%u\n",
                   (unsigned)NUM_FLOCK_OUIS,
                   (unsigned)NUM_FLOCK_MFR_OUIS,
                   (unsigned)NUM_SOUNDTHINKING_OUIS);
 }
+
 
 // ─── loop() ──────────────────────────────────────────────────────────────────
 void loop() {
@@ -826,42 +807,32 @@ void loop() {
     updateLED();
     printStatus();
     purgeTracked();
-#if defined(USE_M5BASIC)
-    {
-        int btn = m5basicButtonTick();
-        if (btn == 1) {
-            g_score = 0; g_stickySeen = 0;
-            memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet)); g_mbeLastRssi = -100;
-            Serial.println("[eyespy] Score reset (Btn A)");
-        } else if (btn == 3) {
-            if (g_pScan && g_pScan->isScanning()) g_pScan->stop();
-            promiscStop(); WiFi.disconnect(true); delay(50);
-            g_phase = PHASE_WIFI_SCAN; g_phaseStart = millis();
-            Serial.println("[eyespy] Forced scan (Btn C)");
-        }
-    }
-#endif
-#if defined(USE_M5CORE2_AWS)
-    m5basicVibrationTick();
-#endif
-#if defined(USE_M5STICKC_PLUS_SE)
 
+#if defined(USE_M5BASIC) || defined(USE_M5STICKC_PLUS_SE)
+    // Button presses are now detected on the UI task (ui_task.h) — it is the
+    // only task allowed to touch M5Unified (M5.update()/M5.BtnX) since that
+    // object is shared with the display and is not thread-safe. loop() just
+    // consumes whichever action (if any) the UI task recorded since the last
+    // check. Action codes: 1 = Btn A (reset score), 3 = Btn B/C (force scan).
+    // Brightness (code 2, M5Basic long-press) is handled entirely inside the
+    // UI task's button-tick call and needs no feedback here.
     {
-        int btn = m5stickcButtonTick();
+        uint8_t btn = uiTakeButtonAction();
         if (btn == 1) {
             g_score = 0; g_stickySeen = 0;
             memset(g_mbeLastDet, 0, sizeof(g_mbeLastDet)); g_mbeLastRssi = -100;
-            Serial.println("[eyespy] Score reset (Btn A)");
+            Serial.println("[eyespy] Score reset (button)");
         } else if (btn == 3) {
             if (g_pScan && g_pScan->isScanning()) g_pScan->stop();
             promiscStop(); WiFi.disconnect(true); delay(50);
             g_phase = PHASE_WIFI_SCAN; g_phaseStart = millis();
-            Serial.println("[eyespy] Forced scan (Btn B)");
+            Serial.println("[eyespy] Forced scan (button)");
         }
     }
 #endif
 
 #if defined(HAS_SIMPLE_BUTTON)
+
     // Single bare-GPIO button (Atom Lite/Echo/Voice, DevKit, T-Dongle C5).
     // Press = reset score to 0 + force an immediate scan-cycle restart
     // (mirrors the M5Basic Btn A + Btn C combined action) plus a short

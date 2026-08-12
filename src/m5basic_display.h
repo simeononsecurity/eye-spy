@@ -94,6 +94,14 @@ static unsigned long mbe_vibNextMs   = 0;      // millis() timestamp of next sta
 #define MBE_LOG_LINE_LEN 53   // ~320px / 6px-per-char at text size 1
 static char mbe_logBuf[MBE_LOG_LINES][MBE_LOG_LINE_LEN];
 
+// mbe_logAdd() is called from scan/main-task code (printStatus(),
+// IF_M5BASIC_LOG in main.cpp) while mbe_drawLogStrip() is called from the
+// dedicated UI task (ui_task.h) — mbe_logBuf is therefore genuine mutable
+// state shared across two FreeRTOS tasks. Guard both the writer and reader
+// with a small dedicated critical section (cheap: worst case a handful of
+// memcpy's of ~53 bytes each, never held across a display/SPI call).
+static portMUX_TYPE mbe_logMux = portMUX_INITIALIZER_UNLOCKED;
+
 // Appends text to the on-screen log ring buffer.  Splits on embedded '\n' so
 // a single call — which may itself contain a trailing/embedded newline —
 // becomes one or more ring entries, newest first.
@@ -105,15 +113,18 @@ static void mbe_logAdd(const char* text) {
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
         if (len > 0) {
             size_t n = (len < (size_t)(MBE_LOG_LINE_LEN - 1)) ? len : (size_t)(MBE_LOG_LINE_LEN - 1);
+            portENTER_CRITICAL(&mbe_logMux);
             for (int i = MBE_LOG_LINES - 1; i > 0; i--)
                 memcpy(mbe_logBuf[i], mbe_logBuf[i - 1], MBE_LOG_LINE_LEN);
             memcpy(mbe_logBuf[0], p, n);
             mbe_logBuf[0][n] = '\0';
+            portEXIT_CRITICAL(&mbe_logMux);
         }
         if (!nl) break;
         p = nl + 1;
     }
 }
+
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -267,6 +278,14 @@ static void mbe_scoreBar(int y, int score) {
 // the button bar in m5basicUpdate() — the region is 24px tall, ending
 // exactly at MBE_BTN_Y, so it never overlaps the button bar.
 static void mbe_drawLogStrip() {
+    // Snapshot the ring buffer under the critical section, then draw from
+    // the local copy — keeps the lock held only for the cheap memcpy, never
+    // across the (much slower) SPI display calls below.
+    char snap[MBE_LOG_LINES][MBE_LOG_LINE_LEN];
+    portENTER_CRITICAL(&mbe_logMux);
+    memcpy(snap, mbe_logBuf, sizeof(snap));
+    portEXIT_CRITICAL(&mbe_logMux);
+
     int y0 = MBE_BTN_Y - 24;
     M5.Display.fillRect(0, y0, MBE_W, 24, MBE_BLACK);
     mbe_hline(y0, MBE_DK_GREY);
@@ -275,10 +294,11 @@ static void mbe_drawLogStrip() {
     int ly = y0 + 3;
     for (int i = MBE_LOG_LINES - 1; i >= 0; i--) {
         M5.Display.setCursor(2, ly);
-        M5.Display.print(mbe_logBuf[i]);
+        M5.Display.print(snap[i]);
         ly += 7;
     }
 }
+
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
