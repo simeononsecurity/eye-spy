@@ -111,9 +111,7 @@
   #define USE_M5_SPEAKER  0
 #endif
 
-#if USE_LED
-  #include <Adafruit_NeoPixel.h>
-#endif
+#include "led_neopixel.h"
 
 // T-Dongle C5 TFT display + RGB LED
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
@@ -131,14 +129,9 @@
 #endif
 
 // ─── Hardware ────────────────────────────────────────────────────────────────
-#if USE_LED
-  #ifdef DEVKIT_LED
-    #define LED_PIN   2
-  #else
-    #define LED_PIN   27
-  #endif
-  #define LED_COUNT   1
-#endif
+// LED_PIN/LED_COUNT are defined inside led_neopixel.h (included above) so
+// they live next to the strip object and setLED()/ledBegin() primitives
+// that use them.
 #define BUTTON_PIN  39
 
 // ── Simple single-GPIO button support (Atom Lite/Echo/Voice, DevKit, T-Dongle C5) ──
@@ -183,52 +176,18 @@ static bool simpleButtonPressed() {
 #define RSSI_MIN               -90
 #define BLE_SCAN_DURATION_S      9
 #define PROMISC_WINDOW_MS     5000UL
-#define SCORE_DECAY_INTERVAL  60000UL
-#define DETECTION_RESCORE_MS 120000UL
-#define SCORE_ALERT            6
-#define SCORE_CAUTION          3
 #define ALERT_FLASH_HALF_MS    120
 #define STARTUP_PULSE_MS       600
 #define STARTUP_DURATION_MS   3000UL
 
-// Scores
-#define PTS_AXON               5
-#define PTS_RAYBAN             5
-#define PTS_FLOCK_BLE          5
-#define PTS_FLOCK_BLE_MFR      5   // BLE mfr-ID 0x09C8 (XUNTONG/Flock confirmed)
-#define PTS_RAVEN_BLE          5   // Raven GATT service UUIDs
-#define PTS_SKIMMER            5
-#define PTS_AIRTAG             4
-#define PTS_ODID_BLE           4
-#define PTS_ODID_WIFI          4
-#define PTS_SOUNDTHINKING      4   // SoundThinking/ShotSpotter co-deployed with Flock
-#define PTS_SMARTTAG           3
-#define PTS_TILE               3
-#define PTS_MESHCORE           2
-#define PTS_IBEACON            2
-#define PTS_PERSIST            2
-#define PTS_FLOCK_OUI          5
-#define PTS_ALPR_OUI           5
-#define PTS_FLOCK_SSID         5
-#define PTS_ALPR_SSID          4
-#define PTS_CAM_OUI            3
-#define PTS_CAM_SSID           2
-#define PTS_FLOCK_MFR_OUI      2   // Liteon/USI contract-mfr — shared hardware, low conf
+// Note: SCORE_DECAY_INTERVAL, DETECTION_RESCORE_MS, SCORE_ALERT,
+// SCORE_CAUTION, and all per-engine PTS_* score weights now live in
+// es_confidence.h (included further below) alongside the rest of the
+// confidence-scoring engine they configure.
 
 // Channel hop list for promiscuous sniff
 static const uint8_t CHANNELS[] = {1,6,11,3,8,13};
 #define NUM_CHANNELS (sizeof(CHANNELS)/sizeof(CHANNELS[0]))
-
-// ─── LED ─────────────────────────────────────────────────────────────────────
-#if USE_LED
-static Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
-inline void setLED(uint8_t r, uint8_t g, uint8_t b) {
-    strip.setPixelColor(0, strip.Color(r, g, b));
-    strip.show();
-}
-#else
-inline void setLED(uint8_t, uint8_t, uint8_t) {}
-#endif
 
 // ─── Audio alert helper ───────────────────────────────────────────────────────
 static void audioAlert(bool isAlert) {
@@ -241,177 +200,14 @@ static void audioAlert(bool isAlert) {
 #endif
 }
 
-// ─── OUI / SSID tables ───────────────────────────────────────────────────────
-
-// Camera vendor OUIs
-static const uint8_t CAM_OUIS[][3] = {
-    {0x00,0x40,0x8c},{0xac,0xcc,0x8e},{0xb8,0xa4,0x4f}, // Axis
-    {0x4c,0xbd,0x8f},{0xbc,0xad,0x28},{0x44,0x19,0xb6},  // Hikvision
-    {0xc4,0x2f,0x90},{0x28,0x57,0xbe},                  // Hikvision
-    {0x90,0x02,0xa9},{0x3c,0xef,0x8c},{0xe0,0x50,0x8b},{0x4c,0x11,0xbf}, // Dahua
-    {0xec,0x71,0xdb},                                   // Reolink
-    {0x2c,0xaa,0x8e},{0xd0,0x3f,0x27},                  // Wyze
-    {0x3c,0x37,0x86},{0x14,0xb4,0x84},                  // Arlo
-    {0xf0,0x27,0x65},{0x18,0xb4,0x30},                  // Ring/Nest
-    {0x64,0x16,0x66},                                   // Nest
-    {0x9c,0x8e,0xcd},{0x90,0xc7,0xd8},                  // Amcrest
-    {0x00,0x2b,0x67},                                   // Vivotek
-    {0x34,0x40,0xb5},{0x00,0x09,0x6c},                  // Hanwha
-    {0x00,0x40,0x48},{0xac,0x3a,0x7a},                  // FLIR
-    {0x00,0x1b,0xc5},                                   // Mobotix
-    {0xa8,0x9f,0xba},{0xfc,0xec,0xda},{0x24,0xa4,0x3c}, // Ubiquiti
-};
-#define NUM_CAM_OUIS (sizeof(CAM_OUIS)/sizeof(CAM_OUIS[0]))
-
-// Flock Safety camera OUIs — scored +5 (high-confidence, exclusively Flock).
-// Synced with fy_detect.h fy_oui_high[] (flock-you-esp32 v2).
-// NOTE: 82:6b:f2 has the LAA bit set (0x82 & 0x02) but IS a confirmed Flock OUI
-//       (DeFlockJoplin 12th camera, wildcard-probe field dataset).
-static const uint8_t FLOCK_OUIS[][3] = {
-    // @NitekryDPaul promiscuous-mode dataset (25 OUIs)
-    {0x70,0xc9,0x4e},{0x3c,0x91,0x80},{0xd8,0xf3,0xbc},{0x80,0x30,0x49},{0xb8,0x35,0x32},
-    {0x14,0x5a,0xfc},{0x74,0x4c,0xa1},{0x08,0x3a,0x88},{0x9c,0x2f,0x9d},{0xc0,0x35,0x32},
-    {0x94,0x08,0x53},{0xe4,0xaa,0xea},{0x24,0xb2,0xb9},
-    {0xb8,0x1e,0xa4},{0x70,0x08,0x94},{0x58,0x8e,0x81},{0xec,0x1b,0xbd},{0x3c,0x71,0xbf},
-    {0x58,0x00,0xe3},{0x90,0x35,0xea},{0x5c,0x93,0xa2},{0x64,0x6e,0x69},{0x48,0x27,0xea},
-    {0xa4,0xcf,0x12},{0xe0,0x4f,0x43},
-    // DeFlockJoplin — 12th cam, wildcard-probe field test (LAA bit set but confirmed Flock)
-    {0x82,0x6b,0xf2},
-    // Flock Safety direct IEEE assignment (dougborg/PR#39)
-    {0xb4,0x1e,0x52},
-    // FS Ext Battery device series (dougborg/PR#39)
-    {0x04,0x0d,0x84},{0xf0,0x82,0xc0},{0x1c,0x34,0xf1},{0x38,0x5b,0x44},{0x94,0x34,0x69},{0xb4,0xe3,0xf9},
-    // Legacy eye-spy entries (IEEE-registered, kept for continuity)
-    {0xd4,0xbb,0xe6},{0x3c,0x61,0x05},
-};
-#define NUM_FLOCK_OUIS (sizeof(FLOCK_OUIS)/sizeof(FLOCK_OUIS[0]))
-
-// Contract-manufacturer OUIs (Liteon Technology / USI) — low confidence (+2).
-// These ship many non-Flock devices; match alone warrants caution, not alert.
-static const uint8_t FLOCK_MFR_OUIS[][3] = {
-    {0xf4,0x6a,0xdd},  // Liteon Technology
-    {0xf8,0xa2,0xd6},  // Liteon Technology
-    {0x00,0xf4,0x8d},  // Universal Scientific Industrial (USI)
-    {0xd0,0x39,0x57},  // USI
-    {0xe8,0xd0,0xfc},  // USI
-    {0xe0,0x0a,0xf6},  // USI (dougborg/PR#39)
-};
-#define NUM_FLOCK_MFR_OUIS (sizeof(FLOCK_MFR_OUIS)/sizeof(FLOCK_MFR_OUIS[0]))
-
-// SoundThinking / ShotSpotter acoustic sensors — co-deployed with Flock ALPR (+4).
-static const uint8_t SOUNDTHINKING_OUIS[][3] = {
-    {0xd4,0x11,0xd6},  // SoundThinking (formerly ShotSpotter)
-};
-#define NUM_SOUNDTHINKING_OUIS (sizeof(SOUNDTHINKING_OUIS)/sizeof(SOUNDTHINKING_OUIS[0]))
-
-// ALPR OUIs — Motorola Solutions / Vigilant Solutions LPR cameras
-static const uint8_t ALPR_OUIS[][3] = {
-    {0x00,0x0e,0x58},  // Motorola Solutions / Vigilant
-};
-#define NUM_ALPR_OUIS (sizeof(ALPR_OUIS)/sizeof(ALPR_OUIS[0]))
-
-// Flock-specific SSID keywords (score +5)
-static const char* FLOCK_SSID_KW[] = {
-    "flock", "flocksafety", "fs ext", "penguin", "pigvision", "raven", nullptr
-};
-
-// General ALPR keyword SSIDs (score +4)
-static const char* ALPR_SSID_KW[] = {
-    "alpr", "lpr", "vigilant", "plateread", "licenseplat",
-    "motorola", "automate", nullptr
-};
-
-// Camera keyword SSIDs (score +2)
-static const char* CAM_SSID_KW[] = {
-    "cam", "ipcam", "hikvision", "dahua", "reolink", "arlo", "wyze",
-    "ring", "blink", "nest", "cctv", "nvr", "dvr", "doorbell",
-    "surv", "axis", "amcrest", "vivotek", "lorex", "unifi", "protect",
-    "flir", "mobotix", "hanwha", "genetec", nullptr
-};
-
-// Flock / Raven BLE device name patterns (case-insensitive substring)
-static const char* FLOCK_BLE_NAMES[] = {
-    "flock", "raven", "penguin", "pigvision", "fs ext battery", nullptr
-};
-
-// Raven GATT service UUIDs (GainSec research — full 128-bit)
-static const char* RAVEN_UUIDS[] = {
-    "0000180a-0000-1000-8000-00805f9b34fb",  // Device Information
-    "00003100-0000-1000-8000-00805f9b34fb",  // GPS
-    "00003200-0000-1000-8000-00805f9b34fb",  // Power
-    "00003300-0000-1000-8000-00805f9b34fb",  // Network
-    "00003400-0000-1000-8000-00805f9b34fb",  // Upload
-    "00003500-0000-1000-8000-00805f9b34fb",  // Error
-    "00001809-0000-1000-8000-00805f9b34fb",  // Health (legacy fw 1.1.x)
-    "00001819-0000-1000-8000-00805f9b34fb",  // Location (legacy fw 1.1.x)
-    nullptr
-};
-
-// HC-0x card skimmer names (exact match)
-static const char* SKIMMER_NAMES[] = { "HC-03", "HC-05", "HC-06", nullptr };
-
-// ─── Detection state for each engine ─────────────────────────────────────────
-#define DECL_DETECTOR(name) \
-    static volatile bool          g_##name##Det      = false; \
-    static volatile int8_t        g_##name##Rssi     = -100;  \
-    static volatile unsigned long g_##name##Seen     = 0;     \
-    static          unsigned long g_##name##Scored   = 0;     \
-    static          uint16_t      g_##name##Count    = 0;     \
-    static          unsigned long g_##name##LoggedAt = 0
-
-DECL_DETECTOR(axon);
-DECL_DETECTOR(rayban);
-DECL_DETECTOR(flockBle);
-DECL_DETECTOR(flockBleMfr);   // BLE mfr-ID 0x09C8 (XUNTONG)
-DECL_DETECTOR(ravenBle);      // Raven GATT service UUIDs
-DECL_DETECTOR(skimmer);
-DECL_DETECTOR(airtag);
-DECL_DETECTOR(odidBle);
-DECL_DETECTOR(odidWifi);
-DECL_DETECTOR(smarttag);
-DECL_DETECTOR(tile);
-DECL_DETECTOR(meshcore);
-DECL_DETECTOR(ibeacon);
-DECL_DETECTOR(persist);
-
-// WiFi scored inline (not volatile)
-static unsigned long g_flockOuiScored       = 0;
-static unsigned long g_flockMfrOuiScored    = 0;
-static unsigned long g_soundthinkingScored  = 0;
-static unsigned long g_alprOuiScored        = 0;
-static unsigned long g_flockSsidScored      = 0;
-static unsigned long g_alprSsidScored       = 0;
-static unsigned long g_camOuiScored         = 0;
-static unsigned long g_camSsidScored        = 0;
-
-// ─── Confidence score ─────────────────────────────────────────────────────────
-static int           g_score      = 0;
-static unsigned long g_lastDecay  = 0;
-// Last time any BLE detection flag was active in processBLE().
-// While this is within DETECTION_RESCORE_MS, score decay is suppressed
-// so the LED keeps alerting until the device actually disappears.
-static unsigned long g_stickySeen = 0;
+#include "es_detect.h"
+#include "es_confidence.h"
 
 // Detection tracking for m5basic_display — always compiled (tiny: ~50 bytes).
 // Updated by mbeDetTrack() which is called from CHECK_DET.
 static char     g_mbeLastDet[32]  = {0};
 static int8_t   g_mbeLastRssi     = -100;
 static uint32_t g_mbeTotalEvents  = 0;
-
-// ─── Device persistence tracker ──────────────────────────────────────────────
-#define MAX_TRACKED 50
-#define PERSIST_MIN_COUNT   3
-#define PERSIST_MIN_MS   300000UL  // 5 minutes
-
-struct TrackedDev {
-    char     addr[18];
-    unsigned long firstSeen;
-    unsigned long lastSeen;
-    uint16_t seenCount;
-    bool     scored;
-};
-static TrackedDev g_tracked[MAX_TRACKED];
-static uint8_t    g_trackedCount = 0;
 
 // ─── Phase / app state ────────────────────────────────────────────────────────
 // PHASE_WIFI_WAIT: async scan started; main loop keeps running (LED never stalls)
@@ -459,15 +255,9 @@ static void channelHop() {
 }
 
 // ─── BLE callback ─────────────────────────────────────────────────────────────
+// strContainsCI() now lives in es_detect.h alongside the pattern tables it
+// matches against.
 static NimBLEScan* g_pScan = nullptr;
-
-static bool strContainsCI(const char* hay, const char* needle) {
-    if (!hay || !needle) return false;
-    char low[64]; size_t i=0;
-    while (i<63 && hay[i]) { low[i]=(char)tolower((unsigned char)hay[i]); i++; }
-    low[i]='\0';
-    return strstr(low, needle) != nullptr;
-}
 
 class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* adv) override {
@@ -645,25 +435,9 @@ static void startBLEScan() {
     Serial.println("[eyespy] BLE scan start");
 }
 
-// ─── OUI match helper ─────────────────────────────────────────────────────────
-static bool ouiMatch(const uint8_t* bssid, const uint8_t tbl[][3], size_t cnt) {
-    for (size_t i = 0; i < cnt; i++)
-        if (bssid[0]==tbl[i][0] && bssid[1]==tbl[i][1] && bssid[2]==tbl[i][2])
-            return true;
-    return false;
-}
-
-static bool ssidHas(const char* ssid, const char** kws) {
-    if (!ssid || !ssid[0]) return false;
-    char low[33]; size_t i=0;
-    while (i<32 && ssid[i]) { low[i]=(char)tolower((unsigned char)ssid[i]); i++; }
-    low[i]='\0';
-    for (const char** kw=kws; *kw; kw++)
-        if (strstr(low,*kw)) return true;
-    return false;
-}
-
 // ─── Detection tracking helper ────────────────────────────────────────────────
+// ouiMatch()/ssidHas() now live in es_detect.h alongside the pattern tables
+// they match against.
 // Records last-fired detection type/RSSI for m5basic_display.
 // Compiled unconditionally (tiny); called from CHECK_DET.
 static inline void mbeDetTrack(const char* tag, int8_t rssi) {
@@ -687,13 +461,7 @@ static inline void mbeDetTrack(const char* tag, int8_t rssi) {
   #define IF_M5BASIC_LOG(tag, rssi, cnt) do {} while (0)
 #endif
 
-// ─── Scoring ─────────────────────────────────────────────────────────────────
-static void addScore(int pts, unsigned long now, unsigned long* ts, const char* tag) {
-    if (now - *ts < DETECTION_RESCORE_MS) return;
-    *ts = now;
-    g_score += pts;
-    Serial.printf("[eyespy] +%d (%s)  score=%d\n", pts, tag, g_score);
-}
+// addScore() now lives in es_confidence.h alongside the rest of the scoring engine.
 
 // ─── WiFi scan ───────────────────────────────────────────────────────────────
 // Called once the async scan has completed with result count n.
@@ -773,23 +541,10 @@ static void startWifiPromisc() {
 }
 
 // ─── Process BLE detections ───────────────────────────────────────────────────
+// CHECK_DET(...) is defined in es_confidence.h (included above) alongside
+// the rest of the scoring engine it drives.
 static void processBLE() {
     unsigned long now = millis();
-
-#define CHECK_DET(name, pts, tag) \
-    if (g_##name##Det) { \
-        g_##name##Det = false; \
-        g_##name##Count++; \
-        g_stickySeen = now; \
-        mbeDetTrack(tag, (int8_t)g_##name##Rssi); \
-        if (g_##name##Count == 1 || now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
-            g_##name##LoggedAt = now; \
-            Serial.printf("[eyespy] " tag "  RSSI=%d  #%u\n", \
-                          (int)g_##name##Rssi, (unsigned)g_##name##Count); \
-            IF_M5BASIC_LOG(tag, (int)g_##name##Rssi, (unsigned)g_##name##Count); \
-        } \
-        addScore(pts, now, &g_##name##Scored, tag); \
-    }
 
     CHECK_DET(axon,        PTS_AXON,         "Axon-cam");
     CHECK_DET(rayban,      PTS_RAYBAN,       "RayBan-Meta");
@@ -807,18 +562,7 @@ static void processBLE() {
     CHECK_DET(persist,     PTS_PERSIST,      "PersistTracker");
 }
 
-// ─── Score decay ─────────────────────────────────────────────────────────────
-static void tickDecay() {
-    unsigned long now = millis();
-    // Sticky alert: suppress decay while any detection type is still actively
-    // being seen (within DETECTION_RESCORE_MS).  Once the device disappears,
-    // g_stickySeen stops being refreshed and decay resumes after the window.
-    if (now - g_stickySeen < DETECTION_RESCORE_MS) return;
-    if (now - g_lastDecay >= SCORE_DECAY_INTERVAL) {
-        g_lastDecay = now;
-        if (g_score > 0) { g_score--; Serial.printf("[eyespy] decay  score=%d\n", g_score); }
-    }
-}
+// tickDecay() now lives in es_confidence.h alongside the rest of the scoring engine.
 
 // ─── LED + audio update ───────────────────────────────────────────────────────
 static void updateLED() {
@@ -899,19 +643,8 @@ static void printStatus() {
 }
 
 
-// ─── Purge stale tracked ──────────────────────────────────────────────────────
-static void purgeTracked() {
-    static unsigned long lastPurge = 0;
-    unsigned long now = millis();
-    if (now - lastPurge < 60000) return;
-    lastPurge = now;
-    uint8_t w = 0;
-    for (uint8_t i = 0; i < g_trackedCount; i++) {
-        if (now - g_tracked[i].lastSeen < 1800000UL)
-            g_tracked[w++] = g_tracked[i];
-    }
-    g_trackedCount = w;
-}
+// purgeTracked() now lives in es_confidence.h alongside the persistence
+// tracker (TrackedDev/g_tracked/g_trackedCount) it operates on.
 
 // ─── setup() ─────────────────────────────────────────────────────────────────
 void setup() {
@@ -941,11 +674,8 @@ void setup() {
 #endif
 
 
-#if USE_LED
-    strip.begin();
-    strip.setBrightness(80);
+    ledBegin(80);
     setLED(0, 0, 40);
-#endif
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
 #if defined(HAS_SIMPLE_BUTTON)
