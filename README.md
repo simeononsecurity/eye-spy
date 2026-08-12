@@ -175,16 +175,45 @@ All output is prefixed with `[eyespy]`:
 
 ## Flock Safety OUI Table
 
-The 22-entry `FLOCK_OUIS` table covers:
-- `d4:bb:e6` — Flock Safety (IEEE registered)
-- `3c:61:05` — Flock Safety (IEEE registered)
-- 20 additional MAC prefixes observed on Flock FS-Ext-Battery and Flock Wi-Fi camera hardware
+The 35-entry `FLOCK_OUIS` table (`src/es_detect.h`) covers:
+- `d4:bb:e6`, `3c:61:05` — Flock Safety (IEEE registered, legacy entries)
+- `b4:1e:52` — Flock Safety direct IEEE assignment
+- `82:6b:f2` — DeFlockJoplin field-verified camera (locally-administered MAC)
+- 6 FS Ext Battery device-series prefixes
+- 25 additional MAC prefixes from the @NitekryDPaul promiscuous-mode dataset
 
-These are checked **separately** from the general ALPR table, so both Flock cameras and Vigilant LPR cameras can score independently in the same scan cycle.
+These are checked **separately** from the general ALPR table, so both Flock cameras and Vigilant LPR cameras can score independently in the same scan cycle. A separate low-confidence `FLOCK_MFR_OUIS` table (Liteon/USI contract-manufacturer prefixes shared with non-Flock hardware) scores +2 instead of +5.
+
+---
+
+## 🧪 Native Unit Tests
+
+The detection pattern library (`src/es_detect.h`) is fully tested via a
+host-side Unity test suite — no ESP32 hardware needed. This mirrors the
+equivalent test setup in the sibling
+[flock-you-esp32](https://github.com/simeononsecurity/flock-you-esp32)
+project:
+
+```bash
+cd eye-spy
+pio test -e native                              # run all 32 tests
+pio test -e native -f test_oui_matching          # OUI table matching (15)
+pio test -e native -f test_ssid_ble_matching     # SSID/BLE-name matching (17)
+```
+
+All **32 tests pass** against the current `es_detect.h`. The test suite covers:
+- All 35 `FLOCK_OUIS`, 6 `FLOCK_MFR_OUIS`, and 31 `CAM_OUIS` prefixes
+- SoundThinking and ALPR OUI isolation (not present in any other table)
+- Cross-table mutual-exclusion (no OUI prefix appears in more than one table)
+- `FLOCK_SSID_KW` / `ALPR_SSID_KW` / `CAM_SSID_KW` keyword matching (case-insensitive)
+- `FLOCK_BLE_NAMES` substring matching via `strContainsCI()`
+- `SKIMMER_NAMES` and `RAVEN_UUIDS` table contents/counts
+- nullptr-termination sanity for every pattern array
 
 ---
 
 ## Notes
+
 
 - BLE scanning is **passive** — no scan requests are transmitted. The device is not detectable by the equipment it is scanning for.
 - RSSI threshold: devices weaker than −90 dBm are ignored to reduce false positives in dense environments.
