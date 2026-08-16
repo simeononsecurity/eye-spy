@@ -440,8 +440,23 @@ static EyeSpyBLECallbacks g_bleCallbacks;
 static void startBLEScan() {
     if (!g_pScan || g_pScan->isScanning()) return;
     g_pScan->clearResults();
-    g_pScan->start(BLE_SCAN_DURATION_S, false);
+    // NOTE: NimBLEScan::start() has two overloads that a plain
+    // (uint32_t, bool) call can bind to:
+    //   bool start(uint32_t, void(*)(NimBLEScanResults), bool)   -> async
+    //   NimBLEScanResults start(uint32_t, bool)                  -> BLOCKING
+    //     (internally calls ulTaskNotifyTake(pdTRUE, portMAX_DELAY) and
+    //      parks the calling task until the scan duration elapses or
+    //      stop() is called)
+    // A bare `g_pScan->start(BLE_SCAN_DURATION_S, false)` resolves to the
+    // BLOCKING overload, freezing loop() (button handling, phase timeouts,
+    // WiFi scan kick-off) for the full BLE_SCAN_DURATION_S every BLE phase.
+    // This is the identical overload-ambiguity bug class documented and
+    // fixed in flock-you-esp32's bleCoexStart() -- force the async overload
+    // by passing an explicit typed null callback so the 3-arg signature is
+    // selected unambiguously.
+    g_pScan->start((uint32_t)BLE_SCAN_DURATION_S, (void (*)(NimBLEScanResults))nullptr, false);
     Serial.println("[eyespy] BLE scan start");
+
 }
 
 // ─── Detection tracking helper ────────────────────────────────────────────────
