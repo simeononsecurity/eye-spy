@@ -48,19 +48,30 @@ this workflow before considering any firmware change complete.
 5. **Hardware-verify claims about runtime behavior.** "This should stop
    the freeze" or "this should fix detection X" are hypotheses, not facts,
    until confirmed via an actual serial capture from a real board.
-6. **Capture serial output reliably.** `pio device monitor` cannot run
+6. **Prefer a two-board cross-device test over same-device loopback**
+   whenever a change touches a detection engine. Flash
+   `src/es_beacon_test.cpp` (`[env:atom-lite-beacon]`) to one Atom Lite —
+   it rotates through all 21 detection scenarios (12 BLE + 8 WiFi-AP + 1
+   WiFi-promiscuous) plus a periodic `persist` scenario, holding each for
+   `SCENARIO_HOLD_MS` (20 s) to reliably overlap the detector's ~17-19s
+   phase-cycling window — then flash the real detector firmware being
+   tested to a second board and confirm each expected engine fires. See
+   `04-detection-methods.md`'s "Test tooling" section for the full
+   scenario/engine mapping. This firmware only broadcasts test signals —
+   never flash it to a device meant to be a real detector.
+7. **Capture serial output reliably.** `pio device monitor` cannot run
    non-interactively in most agent environments. Use the PlatformIO
    virtualenv's `pyserial` directly (or the platformio-mcp monitor tools)
    with DTR/RTS both explicitly forced `false` before AND after opening
    the port, since auto-reset boards can otherwise reset unexpectedly
    mid-capture.
-7. **Look for silence, not just errors.** A hang/freeze often produces NO
+8. **Look for silence, not just errors.** A hang/freeze often produces NO
    error message at all — the last clean log line simply never gets a
    successor. When diagnosing a suspected hang (e.g. the `[eyespy] BLE
    scan start` line printing but nothing after it for far longer than
    `BLE_SCAN_DURATION_S`), always capture the FULL boot sequence and check
    where printed output actually stalls relative to the phase it's in.
-8. **Don't declare victory on a single successful run.** Radio-based tests
+9. **Don't declare victory on a single successful run.** Radio-based tests
    are inherently a little noisy. Repeat the test at least once, or
    capture a long-enough window, to make sure a fix is robust.
 

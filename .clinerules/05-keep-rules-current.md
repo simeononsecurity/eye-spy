@@ -20,19 +20,18 @@ Update the relevant file in this folder (or add a new one) whenever you:
    quirks. Add a short note to `01-clean-code.md` or create a new topic
    file if the lesson is broadly applicable.
 2. **Add, remove, or change the scoring of a detection engine** — keep
-   `README.md`'s detection-engine tables (and a
-   `04-detection-methods.md` file here, if/when one is created) in sync
-   with `es_detect.h`/`es_confidence.h`/`main.cpp`. As of this writing
-   eye-spy does not yet have its own `04-detection-methods.md`; if the
-   engine count/scoring changes significantly, consider adding one
-   modeled on flock-you-esp32's (`.clinerules/04-detection-methods.md`
-   there), which keeps a single accurate source of truth for exactly this
-   kind of drift.
-3. **Add a new test/validation method or tool** (e.g. a beacon-test /
-   self-test firmware analogous to flock-you-esp32's `beacon_test.cpp` /
-   `ble_selftest.h` — eye-spy does not yet have an equivalent) — document
-   it in `02-test-before-commit.md` so future sessions reuse it instead of
-   re-inventing it.
+   `README.md`'s detection-engine tables and this folder's
+   `04-detection-methods.md` in sync with
+   `es_detect.h`/`es_confidence.h`/`main.cpp`. Don't let it drift out of
+   sync the way flock-you-esp32's own equivalent file warns against.
+3. **Add a new test/validation method or tool** — document it in
+   `02-test-before-commit.md` so future sessions reuse it instead of
+   re-inventing it. eye-spy's hardware-in-the-loop beacon tester
+   (`src/es_beacon_test.cpp`, `[env:atom-lite-beacon]`) was added this way
+   — see `04-detection-methods.md`'s "Test tooling" section for its full
+   scenario list and usage. If it is ever extended (e.g. a new detection
+   engine added upstream that the tester doesn't yet cover), update that
+   section too.
 4. **Discover a new architectural convention worth enforcing** (a new
    naming prefix, a new file-decomposition boundary, a new board-variant
    pattern in `platformio.ini`) — add it to `03-file-size-and-decomposition.md`.

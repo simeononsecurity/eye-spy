@@ -112,9 +112,52 @@ full root-cause writeup.
   pattern-table integrity (counts, mutual exclusivity, null-termination)
   directly on the host, no hardware required. Run via `pio test -e native`
   or the platformio-mcp `run_tests` tool.
-- No beacon-test/self-test firmware equivalent exists yet (unlike
-  flock-you-esp32's `beacon_test.cpp` + `ble_selftest.h`). This remains an
-  open gap — see `05-keep-rules-current.md` item 3 — for anyone wanting to
-  do real hardware-in-the-loop validation of the BLE/WiFi detection
-  engines end-to-end rather than relying solely on the native unit tests
-  plus manual field testing against real devices.
+- `src/es_beacon_test.cpp` (`[env:atom-lite-beacon]` PlatformIO
+  environment, standalone `.cpp` entry point selected via
+  `build_src_filter`, same pattern as flock-you-esp32's `beacon_test.cpp`)
+  — the hardware-in-the-loop equivalent, covering all 21 rotating
+  detection scenarios (12 BLE + 8 WiFi-AP + 1 WiFi-promiscuous) plus a
+  separately-timed `persist` scenario, for testing against a SECOND board
+  running a real detector environment (e.g. `atom-lite`). Unlike
+  flock-you-esp32's fast ~4s rotation (viable because that detector's
+  `BLE_COEX_MODE` listens continuously), eye-spy time-multiplexes BLE/WiFi-
+  scan/promiscuous phases (see "Phase schedule" above) with a full rotation
+  period of ~17-19s, so each scenario here is held for
+  `SCENARIO_HOLD_MS` = 20 s to reliably overlap the detector's full phase
+  cycle at least once, regardless of which phase it happens to be in when
+  the scenario starts.
+  - **BLE scenarios** (12): straightforward `NimBLEAdvertising` calls for
+    `rayban`/`flockBle`/`flockBleMfr`/`ravenBle`/`skimmer`/`airtag`/
+    `odidBle`/`smarttag`/`tile`/`meshcore`/`ibeacon`, plus `axon`, which
+    needs the tester's *own* BLE advertising address to fall in the
+    `00:25:df` OUI (since `axon` matches on `addr`, the peer address, not
+    manufacturer data) — done via a manually-constructed reversed-byte-
+    order address (`NimBLEAddress` stores bytes in reverse vs. the printed
+    `xx:xx:xx:xx:xx:xx` string) passed to `ble_hs_id_set_rnd()`, mirroring
+    `ble_selftest.h`'s address-manipulation pattern from flock-you-esp32.
+  - **WiFi-AP scenarios** (8): Flock/ALPR/SoundThinking/Flock-mfr OUI and
+    Flock/ALPR/Camera SSID-keyword engines all require a real, discoverable
+    BSSID/SSID pair during `WiFi.scanNetworks()` — not raw frame injection
+    like flock-you-esp32's promiscuous sniffer — so each scenario spins up
+    a real SoftAP with a spoofed MAC via
+    `WiFi.mode(WIFI_AP); esp_wifi_set_mac(WIFI_IF_AP, mac); WiFi.softAP(ssid);`
+    (the documented ESP-IDF sequence: interface must not yet be broadcasting
+    when `esp_wifi_set_mac()` is called; `mode(WIFI_AP)` brings up the AP
+    netif without starting the beacon, satisfying that constraint).
+  - **WiFi-promiscuous scenario** (1): `odidWifi` is exercised via a real
+    raw-802.11 beacon frame (`es_beacon_frames.h`, a minimal builder mirroring
+    flock-you-esp32's `beacon_frames.h`) with dest MAC (addr1) set to the
+    OpenDroneID NaN broadcast `51:6f:9a:01:00:00`, sent via
+    `esp_wifi_80211_tx()` on a channel sweep so it lands during whichever
+    channel the detector's `PHASE_PROMISC` happens to be dwelling on.
+  - **`persist`** is deliberately excluded from the 20 s-hold rotation and
+    instead fires on its own independent `PERSIST_INTERVAL_MS` (150 s)
+    timer using one fixed random BLE address generated once at boot — this
+    lets 3+ sightings of the same unclassified address accumulate across
+    `PERSIST_MIN_MS` (5 min) within a single test session without waiting
+    for ~3 full 21-scenario rotations (~21+ minutes) if folded into the
+    main shuffle.
+  - Build/flash: `pio run -e atom-lite-beacon -t upload` (or the
+    platformio-mcp `build_project`/`upload_firmware` tools with
+    `environment=atom-lite-beacon`). GPIO39 button force-advances to the
+    next scenario early, for faster manual testing.
