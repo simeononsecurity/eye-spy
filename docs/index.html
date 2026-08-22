@@ -221,19 +221,19 @@
           <span class="board-desc">ATOM Voice with I2S audio</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5stack-basic.json')">
+        <button class="board-btn" onclick="selectFW(this,'manifest-m5stack-basic-ble.json')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5Stack Basic Core v2.7</span>
           <span class="board-desc">2.0&quot; IPS 320×240 display · speaker · 3 buttons · 16 MB flash</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5stack-core2-aws.json')">
+        <button class="board-btn" onclick="selectFW(this,'manifest-m5stack-core2-aws-ble.json')">
           <span class="board-chip">ESP32 · 8 MB PSRAM</span>
           <span class="board-name">M5Stack Core2 For AWS</span>
           <span class="board-desc">2.0&quot; capacitive touch IPS · I²S speaker · ATECC608 crypto</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5stickc-plus-se.json')">
+        <button class="board-btn" onclick="selectFW(this,'manifest-m5stickc-plus-se-ble.json')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5StickC Plus SE</span>
           <span class="board-desc">1.14&quot; ST7789v2 135×240 · passive buzzer · 2 buttons · orange case</span>
@@ -245,9 +245,16 @@
           <span class="board-desc">USB-dongle with TFT display &amp; RGB LED</span>
         </button>
 
+        <button class="board-btn board-experimental" onclick="selectFW(this,'manifest-atom-lite-beacon.json')">
+          <span class="board-chip">ESP32 · Test Tool</span>
+          <span class="board-name">🧪 Beacon Tester (M5Atom Lite)</span>
+          <span class="board-desc">Broadcasts fake surveillance-device BLE/WiFi signals so you can verify a SEPARATE real Eye Spy detector at home. Not a detector itself &mdash; do not flash to a device you intend to use as a real detector.</span>
+        </button>
+
       </div>
     </div>
   </div>
+
 
   <!-- Step 3: Flash -->
   <div class="wizard-step" id="step3">

@@ -40,7 +40,25 @@ jobs:
 
       # Build ALL required environments in ONE pio run invocation.
       # A single invocation only cleans once at start, then builds each env
-      # sequentially -- so all four firmware.bin files survive together.
+      # sequentially -- so all firmware.bin files survive together.
+      #
+      # NOTE on m5stack-basic / m5stack-core2-aws / m5stickc-plus-se: we build
+      # the "-ble" suffixed environment for these three boards, not the plain
+      # one. Per .clinerules/03-file-size-and-decomposition.md, the
+      # -DENABLE_BLE_SCAN=1 -DBLE_COEX_MODE=1 flags on the "-ble" envs are
+      # vestigial no-ops -- main.cpp never branches on either macro, and BLE
+      # scanning always runs unconditionally via the phase state machine
+      # regardless of which of the pair is built. Since the two envs are
+      # therefore behaviorally IDENTICAL, publishing both as if they were a
+      # meaningful user choice would be misleading (unlike flock-you-esp32,
+      # where -ble vs non-ble is a real compile-time difference). We publish
+      # only the "-ble"-suffixed build so the web flasher's single "detector"
+      # choice per board is unambiguous, while still satisfying "default to
+      # the ones with BLE enabled" literally.
+      #
+      # atom-lite-beacon is the standalone beacon-tester firmware (analogous
+      # to flock-you-esp32's m5atom-lite-beacon) -- a genuinely distinct
+      # firmware, not a detector, used to test a SEPARATE board's detector.
       - name: Build all required environments
         run: >
           pio run
@@ -48,9 +66,10 @@ jobs:
           -e atom-echo
           -e atom-voice
           -e esp32dev
-          -e m5stack-basic
-          -e m5stack-core2-aws
-          -e m5stickc-plus-se
+          -e m5stack-basic-ble
+          -e m5stack-core2-aws-ble
+          -e m5stickc-plus-se-ble
+          -e atom-lite-beacon
 
       # Verify required build artifacts
       - name: Verify build artifacts
@@ -61,7 +80,7 @@ jobs:
           ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
 
           # Required envs - failure here blocks deploy
-          for env in atom-lite atom-echo atom-voice esp32dev m5stack-basic m5stack-core2-aws m5stickc-plus-se; do
+          for env in atom-lite atom-echo atom-voice esp32dev m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble atom-lite-beacon; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -93,7 +112,7 @@ jobs:
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
           # Required environments
-          for env in atom-lite atom-echo atom-voice esp32dev m5stack-basic m5stack-core2-aws m5stickc-plus-se; do
+          for env in atom-lite atom-echo atom-voice esp32dev m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble atom-lite-beacon; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -141,13 +160,14 @@ jobs:
           MANIFEST
           }
 
-          gen_manifest "atom-lite"          "Eye Spy -- M5Atom Lite"
-          gen_manifest "atom-echo"          "Eye Spy -- M5Atom Echo"
-          gen_manifest "atom-voice"         "Eye Spy -- M5Atom Voice"
-          gen_manifest "esp32dev"           "Eye Spy -- Generic ESP32 DevKit"
-          gen_manifest "m5stack-basic"      "Eye Spy -- M5Stack Basic Core v2.7"
-          gen_manifest "m5stack-core2-aws"  "Eye Spy -- M5Stack Core2 For AWS"
-          gen_manifest "m5stickc-plus-se"   "Eye Spy -- M5StickC Plus SE"
+          gen_manifest "atom-lite"              "Eye Spy -- M5Atom Lite"
+          gen_manifest "atom-echo"              "Eye Spy -- M5Atom Echo"
+          gen_manifest "atom-voice"             "Eye Spy -- M5Atom Voice"
+          gen_manifest "esp32dev"               "Eye Spy -- Generic ESP32 DevKit"
+          gen_manifest "m5stack-basic-ble"      "Eye Spy -- M5Stack Basic Core v2.7 (BLE)"
+          gen_manifest "m5stack-core2-aws-ble"  "Eye Spy -- M5Stack Core2 For AWS (BLE)"
+          gen_manifest "m5stickc-plus-se-ble"   "Eye Spy -- M5StickC Plus SE (BLE)"
+          gen_manifest "atom-lite-beacon"       "Eye Spy -- Beacon Tester (M5Atom Lite)"
 
           # ESP32-C5 manifest -- only generate if firmware was built
           if [ -d "site/firmware/lilygo-t-dongle-c5" ]; then
