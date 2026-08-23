@@ -58,6 +58,26 @@ this repository. They mirror the equivalent rules in the sibling
   FreeRTOS task — never from `loop()` or scan/callback code. Communicate
   state to it only through `uiPublish()`/`uiTakeButtonAction()`'s
   critical-section-protected snapshot, not direct calls.
+- **Don't let a periodic cosmetic "tick" redraw share a code path with a
+  genuine full data-change redraw.** `m5basicUpdate()`/`m5stickcUpdate()`
+  (`src/m5basic_display.h`/`src/m5stickc_display.h`) both include a ~250ms
+  "stale" timer so the "Last alert: X ago" line visibly counts up between
+  detections. That timer used to be OR'd directly into the same `changed`
+  bool that gated score/detection/phase/RSSI changes, so EVERY ~250ms tick
+  paid for the full `fillRect(BLACK)` + whole-content-area redraw — a
+  continuous ~4Hz flash even while completely idle. Fixed by splitting into
+  a `dataChanged` bool (real state change → full redraw) and a `stale` bool
+  (cosmetic tick → cheap partial redraw of just the one genuinely
+  time-based line, via a shared `mbe_drawAlertLine()`/`msce_drawAlertLine()`
+  helper and a cached `mbe_lastAlertY`/`msce_lastAlertY` y-coordinate from
+  the last full redraw). Mirror this `dataChanged`/`stale` split for any
+  new periodic/cosmetic redraw trigger added to either display file — never
+  OR it into the same condition as a real content change. On
+  `m5basic_display.h` specifically, the log strip (`mbe_drawLogStrip()`) had
+  the identical bug independently (unconditional redraw on every call) and
+  was fixed the same way, via a `mbe_logVersion` counter and a
+  `force`/no-force parameter.
+
 
 ## Reviewing your own changes
 
