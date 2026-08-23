@@ -57,6 +57,11 @@ static bool    msce_needsRedraw = true;
 // X ago" clock visibly ticks instead of appearing frozen between phase
 // transitions (BLE→WIFI→PROMISC, which can be many seconds apart).
 static unsigned long msce_lastDrawMs = 0;
+// y-coordinate of the "Last alert: X ago" line from the most recent FULL
+// redraw. Only the dedicated UI task (ui_task.h) ever reads/writes this, so
+// no mutex is needed — see m5basic_display.h's mbe_lastAlertY for the full
+// rationale (this is the StickC-side mirror of the same fix).
+static int msce_lastAlertY = 0;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -155,6 +160,33 @@ static void msce_scoreBar(int y, int score) {
     M5.Display.fillRect(3+f,   y, (MSCE_W-8)-f, 10, MSCE_DK_GREY);
 }
 
+// Renders the "Last alert: X ago" line at the given y. Extracted into its
+// own helper so it can be called both from the full-redraw path in
+// m5stickcUpdate() and from the cheap stale-only partial-update path (which
+// reuses the cached msce_lastAlertY rather than recomputing the whole
+// layout) — mirrors m5basic_display.h's mbe_drawAlertLine(). Uses
+// fixed-width printf padding (not fillRect) so shorter new text fully
+// overwrites longer old text via the two-color setTextColor cell-fill
+// semantics. Padding width (24 chars * 6px = 144px) is well under this
+// board's narrower 240px width, matching the Basic version's 30*6=180px
+// under 320px ratio.
+static void msce_drawAlertLine(int y, unsigned long lastAlertMs) {
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(3, y);
+    if (lastAlertMs == 0 || !msce_lastDet[0]) {
+        M5.Display.setTextColor(MSCE_GREY, MSCE_BLACK);
+        M5.Display.printf("%-24s", "Last alert: --");
+    } else if (lastAlertMs < 5000) {
+        M5.Display.setTextColor(MSCE_RED, MSCE_BLACK);
+        M5.Display.printf("%-24s", "Last alert: JUST NOW");
+    } else {
+        char el[12]; msce_fmtMs(lastAlertMs, el, sizeof(el));
+        char line[28]; snprintf(line, sizeof(line), "Last alert: %s ago", el);
+        M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
+        M5.Display.printf("%-24s", line);
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // ── Red LED (G10, active LOW) ──────────────────────────────────────────────
@@ -200,19 +232,39 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
                             const char* phase, unsigned long lastAlertMs,
                             int trackedCount, uint32_t totalEvents) {
     int lvl = msce_level(score);
-    // Redraw at ~4Hz (was 1Hz) so the runtime clock / status feel genuinely
-    // real-time rather than visibly ticking once per second.
-    bool stale = (millis() - msce_lastDrawMs) >= 250;
 
-    bool chg = msce_needsRedraw
-            || (score != msce_lastScore)
-            || (lastDet && strcmp(lastDet, msce_lastDet) != 0)
-            || (phase   && strcmp(phase,   msce_lastPhase) != 0)
-            || (lastRssi != msce_lastRssi)
-            || stale;
-    if (!chg) return;
+    // See m5basic_display.h's m5basicUpdate() for the full root-cause
+    // explanation: this function used to treat the ~250ms "stale" timer
+    // tick as equivalent to a genuine data change, causing the ENTIRE
+    // content area to fillRect(BLACK)+redraw roughly 4x/second
+    // continuously, even when completely idle. Only a genuine dataChanged
+    // pays for the full clear+redraw now; a stale-only tick only refreshes
+    // the "Last alert" line (the sole genuinely time-based piece of content).
+    bool dataChanged = msce_needsRedraw
+                     || (score != msce_lastScore)
+                     || (lastDet && strcmp(lastDet, msce_lastDet) != 0)
+                     || (phase   && strcmp(phase,   msce_lastPhase) != 0)
+                     || (lastRssi != msce_lastRssi);
+    bool stale = (millis() - msce_lastDrawMs) >= 250;
+    if (!dataChanged && !stale) return;
+
+    if (!dataChanged) {
+        msce_lastDrawMs = millis();
+        msce_drawAlertLine(msce_lastAlertY, lastAlertMs);
+        return;
+    }
 
     msce_lastDrawMs = millis();
+    // NOTE: msce_lastScore is captured here (before being overwritten below)
+    // so the caution-level LED single-blink check further down can compare
+    // against the PREVIOUS score. In the original code this comparison ran
+    // AFTER msce_lastScore had already been overwritten to equal the
+    // current score, making `lvl != msce_level(msce_lastScore)` permanently
+    // false — a pre-existing, unrelated latent bug that silently disabled
+    // the caution-blink LED feature entirely. Fixed here as a small,
+    // obviously-correct drive-by fix since this code was already being
+    // touched for the flicker fix; see msce_setLED() call site below.
+    int msce_prevScoreForBlink = msce_lastScore;
     msce_lastScore = score;
     if (lastDet) { strncpy(msce_lastDet,   lastDet, 31); msce_lastDet[31]   = '\0'; }
     if (phase)   { strncpy(msce_lastPhase, phase,   11); msce_lastPhase[11] = '\0'; }
@@ -278,19 +330,14 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
         M5.Display.print("No detections yet"); y += 11;
     }
 
-    // Time since last alert
-    M5.Display.setTextSize(1);
-    if (lastAlertMs == 0 || !msce_lastDet[0]) {
-        M5.Display.setTextColor(MSCE_GREY, MSCE_BLACK);
-        M5.Display.setCursor(3, y); M5.Display.print("Last alert: --");
-    } else if (lastAlertMs < 5000) {
-        M5.Display.setTextColor(MSCE_RED, MSCE_BLACK);
-        M5.Display.setCursor(3, y); M5.Display.print("Last alert: JUST NOW");
-    } else {
-        char el[12]; msce_fmtMs(lastAlertMs, el, sizeof(el));
-        M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
-        M5.Display.setCursor(3, y); M5.Display.printf("Last alert: %s ago", el);
-    }
+    // Time since last alert — the ONLY genuinely time-based piece of
+    // content, so its render logic lives in a shared helper
+    // (msce_drawAlertLine()) and its y position is cached in
+    // msce_lastAlertY: the stale-only tick path above redraws just this one
+    // line instead of paying for the full fillRect(BLACK)+redraw of the
+    // whole content area on every ~250ms tick.
+    msce_lastAlertY = y;
+    msce_drawAlertLine(y, lastAlertMs);
     y += 11;
 
     // Score bar
@@ -306,8 +353,11 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
     if (score >= 6) {
         msce_setLED(true);   // solid red
     } else if (score >= 3) {
-        // Single blink for caution (only when level just changed)
-        if (lvl != msce_level(msce_lastScore)) {
+        // Single blink for caution (only when level just changed). Compares
+        // against msce_prevScoreForBlink (captured before msce_lastScore
+        // was overwritten above) — see that capture site for why comparing
+        // against msce_lastScore itself here was a pre-existing bug.
+        if (lvl != msce_level(msce_prevScoreForBlink)) {
             msce_setLED(true); delay(100); msce_setLED(false);
         }
     } else {

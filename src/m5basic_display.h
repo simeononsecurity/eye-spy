@@ -54,6 +54,13 @@ static constexpr int MBE_H      = 240;
 static constexpr int MBE_HDR_H  = 18;
 static constexpr int MBE_BTN_Y  = 214;
 static constexpr int MBE_BTN_H  = 26;
+// Log-strip height: 4 lines * 7px + 3px top pad + 2px margin = 33. Grown from
+// a hardcoded 24 (3 lines) to mirror flock-you-esp32's equivalent log-window
+// enlargement fix. Grown more conservatively here (3->4, not 3->5) because
+// this board's content area is an exact zero-slack fit in its unmodified
+// layout (see the spacing-reduction comment in m5basicUpdate()) — a 5-line
+// strip would require trimming more than can be done safely.
+static constexpr int MBE_LOG_H = 33;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 static uint8_t mbe_brightness   = 160;
@@ -65,6 +72,15 @@ static bool    mbe_needsRedraw  = true;
 // Alternate display mode toggled by Btn B (brightness cycle skipped — see below)
 // mbe_altMode: 0 = main view, 1 = detection history placeholder
 static uint8_t mbe_altMode      = 0;
+// y-coordinate of the "Last alert: X ago" line from the most recent FULL
+// redraw. Only the dedicated UI task (ui_task.h) ever reads/writes this — see
+// that file's thread-safety contract — so no mutex is needed. Lets a
+// stale-only tick (see m5basicUpdate()) redraw just this one time-based line
+// at its known-correct position instead of paying for a full content
+// fillRect(BLACK)+redraw; it's safe to reuse because dataChanged==false
+// guarantees the layout is identical to the last full redraw.
+static int mbe_lastAlertY = 0;
+
 // Timestamp of the last actual redraw — used to force a periodic (~1 Hz)
 // repaint even when score/lastDet/phase/lastRssi are unchanged, so the
 // "Last alert: X ago" clock visibly ticks instead of appearing frozen
@@ -90,9 +106,17 @@ static unsigned long mbe_vibNextMs   = 0;      // millis() timestamp of next sta
 // the screen so an operator can see live activity without a USB-serial
 // console attached.  Fed by mbe_logAdd(), called from a couple of high-value
 // call sites in main.cpp (printStatus() + the per-engine detection macro).
-#define MBE_LOG_LINES    3
+// Grown 3->4 lines alongside MBE_LOG_H above.
+#define MBE_LOG_LINES    4
 #define MBE_LOG_LINE_LEN 53   // ~320px / 6px-per-char at text size 1
 static char mbe_logBuf[MBE_LOG_LINES][MBE_LOG_LINE_LEN];
+// Bumped on every mbe_logAdd() call so mbe_drawLogStrip() can skip redrawing
+// the strip when nothing new has arrived (e.g. on a stale-only UI tick) —
+// mirrors flock-you-esp32's mb_logVersion fix for the same root-cause bug
+// (mbe_drawLogStrip() used to unconditionally fillRect(BLACK)+redraw on
+// EVERY call, including harmless ~250ms stale ticks with no new log lines).
+static volatile uint32_t mbe_logVersion = 0;
+
 
 // mbe_logAdd() is called from scan/main-task code (printStatus(),
 // IF_M5BASIC_LOG in main.cpp) while mbe_drawLogStrip() is called from the
@@ -118,6 +142,7 @@ static void mbe_logAdd(const char* text) {
                 memcpy(mbe_logBuf[i], mbe_logBuf[i - 1], MBE_LOG_LINE_LEN);
             memcpy(mbe_logBuf[0], p, n);
             mbe_logBuf[0][n] = '\0';
+            mbe_logVersion++;
             portEXIT_CRITICAL(&mbe_logMux);
         }
         if (!nl) break;
@@ -274,10 +299,49 @@ static void mbe_scoreBar(int y, int score) {
     M5.Display.fillRect(8 + f, y, (MBE_W-16) - f,   12, MBE_DK_GREY);
 }
 
+// Renders the "Last alert: X ago" line at the given y. Extracted into its
+// own helper so it can be called both from the full-redraw path in
+// m5basicUpdate() and from the cheap stale-only partial-update path (which
+// reuses the cached mbe_lastAlertY rather than recomputing the whole
+// layout). Uses fixed-width printf padding (not fillRect) so shorter new
+// text fully overwrites longer old text via the two-color setTextColor
+// cell-fill semantics — the same convention already used elsewhere in this
+// codebase (e.g. flock-you-esp32's Runtime/SPIFFS status line).
+static void mbe_drawAlertLine(int y, unsigned long lastAlertMs) {
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(8, y);
+    if (lastAlertMs == 0 || mbe_lastDet[0] == '\0') {
+        M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
+        M5.Display.printf("%-30s", "Last alert: --");
+    } else if (lastAlertMs < 5000) {
+        M5.Display.setTextColor(MBE_RED, MBE_BLACK);
+        M5.Display.printf("%-30s", "Last alert: JUST NOW");
+    } else {
+        char el[12]; mbe_fmtMs(lastAlertMs, el, sizeof(el));
+        char line[32]; snprintf(line, sizeof(line), "Last alert: %s ago", el);
+        M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
+        M5.Display.printf("%-30s", line);
+    }
+}
+
 // Draws the reserved on-screen serial-mirror log strip.  Called just before
-// the button bar in m5basicUpdate() — the region is 24px tall, ending
-// exactly at MBE_BTN_Y, so it never overlaps the button bar.
-static void mbe_drawLogStrip() {
+// the button bar in m5basicUpdate() — the region is MBE_LOG_H px tall,
+// ending exactly at MBE_BTN_Y, so it never overlaps the button bar.
+//
+// force=false (the default) skips the actual redraw when the log content
+// hasn't changed since the last draw (tracked via mbe_logVersion) — this is
+// the fix for the root cause of the log-strip's own independent flicker:
+// this function used to unconditionally fillRect(BLACK)+redraw on EVERY
+// call, including the harmless ~250ms stale tick that fires continuously
+// even with zero new log lines. force=true is passed from the full-redraw
+// path in m5basicUpdate(), since that path has already fillRect(BLACK)'d
+// this entire region and therefore must repaint it regardless of version.
+static void mbe_drawLogStrip(bool force = false) {
+    uint32_t ver = mbe_logVersion;
+    static uint32_t mbe_logDrawnVersion = 0xFFFFFFFFu;
+    if (!force && ver == mbe_logDrawnVersion) return;
+    mbe_logDrawnVersion = ver;
+
     // Snapshot the ring buffer under the critical section, then draw from
     // the local copy — keeps the lock held only for the cheap memcpy, never
     // across the (much slower) SPI display calls below.
@@ -286,8 +350,8 @@ static void mbe_drawLogStrip() {
     memcpy(snap, mbe_logBuf, sizeof(snap));
     portEXIT_CRITICAL(&mbe_logMux);
 
-    int y0 = MBE_BTN_Y - 24;
-    M5.Display.fillRect(0, y0, MBE_W, 24, MBE_BLACK);
+    int y0 = MBE_BTN_Y - MBE_LOG_H;
+    M5.Display.fillRect(0, y0, MBE_W, MBE_LOG_H, MBE_BLACK);
     mbe_hline(y0, MBE_DK_GREY);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(0x4A69, MBE_BLACK);   // dim slate
@@ -362,18 +426,32 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
                            int trackedCount, uint32_t totalEvents) {
     int lvl = mbe_level(score);
 
-    // Only redraw if meaningful state changed.
-    // Redraw at ~4Hz (was 1Hz) so the runtime clock / status feel genuinely
-    // real-time rather than visibly ticking once per second.
+    // WHY THIS SPLIT EXISTS: this function used to treat the ~250ms "stale"
+    // timer tick (added so "Last alert: X ago" visibly counts up) as
+    // equivalent to a genuine data change, and BOTH paths did the exact same
+    // fillRect(BLACK)+full-body redraw. Since "stale" is true on essentially
+    // every call (it only needs ~250ms to elapse), this made the ENTIRE
+    // content area — score, phase, detection info, score bar, log strip —
+    // flash black roughly 4x/second continuously, even with zero detections
+    // and a completely idle scan. Now only a genuine dataChanged
+    // (score/detection/phase/RSSI actually differs from the last redraw)
+    // pays for the full clear+redraw; a stale-only tick only refreshes the
+    // one line of content that's genuinely time-based (see
+    // mbe_drawAlertLine()) plus checks the log strip for new lines.
+    bool dataChanged = mbe_needsRedraw
+                     || (score != mbe_lastScore)
+                     || (lastDet && strcmp(lastDet, mbe_lastDet) != 0)
+                     || (phase   && strcmp(phase,   mbe_lastPhase) != 0)
+                     || (lastRssi != mbe_lastRssi);
     bool stale = (millis() - mbe_lastDrawMs) >= 250;
+    if (!dataChanged && !stale) return;
 
-    bool changed = mbe_needsRedraw
-                 || (score != mbe_lastScore)
-                 || (lastDet && strcmp(lastDet, mbe_lastDet) != 0)
-                 || (phase   && strcmp(phase,   mbe_lastPhase) != 0)
-                 || (lastRssi != mbe_lastRssi)
-                 || stale;
-    if (!changed) return;
+    if (!dataChanged) {
+        mbe_lastDrawMs = millis();
+        mbe_drawAlertLine(mbe_lastAlertY, lastAlertMs);
+        mbe_drawLogStrip();   // force=false: skips unless new lines arrived
+        return;
+    }
 
     mbe_lastDrawMs = millis();
     mbe_lastScore = score;
@@ -391,7 +469,16 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     // ── Content area ──────────────────────────────────────────────────────────
     M5.Display.fillRect(0, MBE_HDR_H, MBE_W, MBE_BTN_Y - MBE_HDR_H, MBE_BLACK);
 
-    int y = MBE_HDR_H + 6;
+    // Top padding and inter-line gaps below are slightly tighter than the
+    // original layout (6->4 top pad, 40->38 after the big score digit,
+    // 22->20 after the detection name, 13->12 after the range estimate,
+    // 12->11 after Total events, and three hline gaps 5->4px) to free ~11px
+    // of vertical room for the enlarged log strip (MBE_LOG_H, grown from 24
+    // to 33px — see mbe_drawLogStrip()) without the content area colliding
+    // with it. Worst case (detection shown) verified by hand to leave a
+    // ~6px gap between the score bar's bottom edge and the log strip's top
+    // edge.
+    int y = MBE_HDR_H + 4;
 
     // Large score number
     M5.Display.setTextSize(4);
@@ -407,7 +494,7 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     M5.Display.setCursor(scoreW + 8, y + 8);
     M5.Display.setTextColor(mbe_levelFg(lvl), MBE_BLACK);
     M5.Display.print(mbe_levelLabel(lvl));
-    y += 40;
+    y += 38;
 
     // Phase + scan indicator
     M5.Display.setTextSize(1);
@@ -416,7 +503,7 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
     M5.Display.printf("Phase: %-8s  Tracked: %d", phase ? phase : "?", trackedCount);
     y += 13;
 
-    mbe_hline(y); y += 5;
+    mbe_hline(y); y += 4;
 
     // Last detection
     if (mbe_lastDet[0]) {
@@ -426,7 +513,7 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
         // Truncate to fit 2x text (each char 12px wide, 320px → ~26 chars)
         char det[26]; strncpy(det, mbe_lastDet, 25); det[25] = '\0';
         M5.Display.print(det);
-        y += 22;
+        y += 20;
 
         // Signal strength bars + trend arrow
         mbe_rPush(lastRssi);
@@ -443,7 +530,7 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
         y += 24;
         // Estimated range ("triangulation" proxy) — free-space path-loss estimate
         mbe_drawRange(8, y, lastRssi);
-        y += 13;
+        y += 12;
 
     } else {
         M5.Display.setTextSize(1);
@@ -453,39 +540,33 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
         y += 13;
     }
 
-    mbe_hline(y); y += 5;
+    mbe_hline(y); y += 4;
 
-    // Time since last alert
-    M5.Display.setTextSize(1);
-    if (lastAlertMs == 0 || mbe_lastDet[0] == '\0') {
-        M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
-        M5.Display.setCursor(8, y);
-        M5.Display.print("Last alert: --");
-    } else if (lastAlertMs < 5000) {
-        M5.Display.setTextColor(MBE_RED, MBE_BLACK);
-        M5.Display.setCursor(8, y);
-        M5.Display.print("Last alert: JUST NOW");
-    } else {
-        char el[12]; mbe_fmtMs(lastAlertMs, el, sizeof(el));
-        M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
-        M5.Display.setCursor(8, y);
-        M5.Display.printf("Last alert: %s ago", el);
-    }
+    // Time since last alert — the ONLY genuinely time-based piece of content
+    // (it ticks even when score/lastDet/phase/lastRssi are all unchanged),
+    // so its render logic lives in a shared helper (mbe_drawAlertLine()) and
+    // its y position is cached in mbe_lastAlertY: the stale-only tick path
+    // above redraws just this one line instead of paying for the full
+    // fillRect(BLACK)+redraw of the whole content area on every ~250ms tick.
+    mbe_lastAlertY = y;
+    mbe_drawAlertLine(y, lastAlertMs);
     y += 13;
 
     // Total events
     M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
     M5.Display.setCursor(8, y);
     M5.Display.printf("Total events: %lu  |  Score decay: 60s", (unsigned long)totalEvents);
-    y += 12;
+    y += 11;
 
     // Score bar
-    mbe_hline(y); y += 5;
+    mbe_hline(y); y += 4;
     mbe_scoreBar(y, score);
     y += 14;
 
-    // Serial-mirror log strip (24px, reserved immediately above the button bar)
-    mbe_drawLogStrip();
+    // Serial-mirror log strip. force=true: this whole region was just
+    // fillRect(BLACK)'d above, so it must be repainted regardless of
+    // mbe_logVersion.
+    mbe_drawLogStrip(true);
 
     // Button bar
     mbe_btnBar("RESET", "BRIGHT", "SCAN");
