@@ -24,9 +24,10 @@ tables in `es_detect.h`, scored via `CHECK_DET()` in `processBLE()`)
 |----------------|--------------------------------------------------------------------------|------------------------|
 | `axon`         | `addr` OUI `00:25:df` (Axon body camera)                                  | `PTS_AXON` = 5          |
 | `rayban`       | Advertised service UUID `0xFD5F` (Ray-Ban Meta smart glasses)             | `PTS_RAYBAN` = 5        |
-| `flockBle`     | Device name substring-matches `FLOCK_BLE_NAMES` (flock/raven/penguin/pigvision/fs ext battery) | `PTS_FLOCK_BLE` = 5 |
+| `flockBle`     | Device name — substring-matches `FLOCK_BLE_NAMES` (flock/raven/penguin/pigvision/fs ext battery/**dfutarg**) **or** matches a firmware-derived name *shape* via `bleNameShapeMatch()` (`Penguin-`+10 digits, a bare 10-digit serial, `FS Ext Battery`, `DfuTarg`) | `PTS_FLOCK_BLE` = 5 |
 | `flockBleMfr`  | Manufacturer-data company ID `0x09C8` (XUNTONG, confirmed Flock)          | `PTS_FLOCK_BLE_MFR` = 5 |
-| `ravenBle`     | Advertised service UUID matches one of `RAVEN_UUIDS[]` (128-bit GATT, GainSec research) | `PTS_RAVEN_BLE` = 5 |
+| `ravenBle`     | Advertised service UUID matches one of `RAVEN_UUIDS[]` **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** (see below) | `PTS_RAVEN_BLE` = 5 |
+| `flockGatt`    | Advertised service UUID matches `FLOCK_GATT_UUIDS[]` — Flock accessory `e8ccbb38-9532-46a8-9fe5-1814df172e6f` or Nordic legacy DFU `00001530-1212-efde-1523-785feabcd123` | `PTS_FLOCK_GATT` = 5 |
 | `skimmer`      | Device name exact-matches `SKIMMER_NAMES` (`HC-03`/`HC-05`/`HC-06`)        | `PTS_SKIMMER` = 5       |
 | `airtag`       | Mfr-data `0x004C` subtype `0x12`/`0x1E`, or raw payload fallback `1E FF 4C 00` / `4C 00 12` | `PTS_AIRTAG` = 4 |
 | `odidBle`      | Advertised service UUID `0xFFFA`, or raw AD payload matching OpenDroneID service-data pattern | `PTS_ODID_BLE` = 4 |
@@ -42,19 +43,59 @@ calls `addScore()` unconditionally for every detector flag, with no
 requirement of a corroborating WiFi hit. Confirmed by direct code reading
 (`es_confidence.h`).
 
+### Firmware-derived BLE additions (Flock camera firmware dump, 2026-09-16)
+
+Two notes worth keeping, because both are easy to get wrong later:
+
+- **The Raven `0x3100`–`0x3500` range sweep exists because the named table was
+  not enough.** `RAVEN_UUIDS[]` only holds the round-hundred services
+  (`0x3100`, `0x3200`, …). The camera also advertises services across the whole
+  range, and the ones that actually leak GPS — `0x3101`/`0x3102` — are *not* in
+  that table, so exact-string matching silently missed the highest-value
+  services. `ravenUuidInRange()` (via `ravenService16FromUuidString()`) parses
+  both the canonical 128-bit form `NimBLEUUID::toString()` emits and the short
+  `0x3101`/`3101` forms. The 16-bit value is the **low** half of the first
+  32-bit group — `00003101-…` is `0x3101`, not `0x0000` (flock-you-esp32's
+  Python equivalent had exactly that bug).
+- **The Flock accessory service is deliberately *not* in `RAVEN_UUIDS[]`.** It
+  is Flock's own GATT service, not a Raven one; folding it in would report it
+  as `Raven-BLE-UUID` and mislabel it everywhere. It gets `FLOCK_GATT_UUIDS[]`
+  and the `flockGatt` detector instead.
+- `onResult()` stays **flag-only** — no `Serial.print` — per the callback
+  rule in `01-clean-code.md`. The `flockGatt`/`ravenBle` logs come from
+  `CHECK_DET()` in loop context, rate-limited by `DETECTION_RESCORE_MS`.
+
 ## WiFi active-scan detections (`processWifiScan()` in `main.cpp`, tables in
 `es_detect.h`, scored inline via `addScore()`)
 
 | Detector         | Trigger                                                                 | Points (`PTS_*`)     |
 |------------------|--------------------------------------------------------------------------|-----------------------|
 | Flock OUI        | BSSID matches `FLOCK_OUIS[]` (35 entries, synced with flock-you-esp32's `fy_oui_high[]`) | `PTS_FLOCK_OUI` = 5 |
+| Flock-FW-MAC     | BSSID is **exactly** one of `FLOCK_FW_DEFAULT_MACS[]` — the two factory-default QCA9377 radio MACs from the camera firmware image (full 6-byte match) | `PTS_FW_DEFAULT_MAC` = 6 |
 | ALPR OUI         | BSSID matches `ALPR_OUIS[]` (Motorola Solutions / Vigilant LPR cameras)   | `PTS_ALPR_OUI` = 5    |
 | Flock SSID       | SSID contains a `FLOCK_SSID_KW` keyword (flock/flocksafety/fs ext/penguin/pigvision/raven) | `PTS_FLOCK_SSID` = 5 |
 | ALPR SSID        | SSID contains an `ALPR_SSID_KW` keyword (alpr/lpr/vigilant/plateread/…)   | `PTS_ALPR_SSID` = 4   |
 | SoundThinking OUI| BSSID matches `SOUNDTHINKING_OUIS[]` (`d4:11:d6`, ShotSpotter, often co-deployed with Flock ALPR) | `PTS_SOUNDTHINKING` = 4 |
 | Camera OUI       | BSSID matches `CAM_OUIS[]` (31 entries — Hikvision/Dahua/Axis/Ring/Nest/Arlo/Wyze/Reolink/FLIR/Amcrest/Vivotek/Hanwha/Mobotix/Ubiquiti) | `PTS_CAM_OUI` = 3 |
 | Camera SSID      | SSID contains a `CAM_SSID_KW` keyword (cam/cctv/dvr/doorbell/nvr/…)       | `PTS_CAM_SSID` = 2    |
-| Flock-mfr OUI    | BSSID matches `FLOCK_MFR_OUIS[]` (Liteon/USI contract-manufacturer OUIs — shared with non-Flock hardware) | `PTS_FLOCK_MFR_OUI` = 2 |
+| Flock-mfr OUI    | BSSID matches `FLOCK_MFR_OUIS[]` (7 entries — 6 Liteon/USI contract-manufacturer OUIs, plus **`00:03:7f` Qualcomm Atheros** from the firmware dump; shared with non-Flock hardware) | `PTS_FLOCK_MFR_OUI` = 2 |
+
+### Firmware-derived WiFi additions (Flock camera firmware dump, 2026-09-16)
+
+- **`00:03:7f` is deliberately mfr-tier, not `FLOCK_OUIS`.** It is the QCA9377
+  radio's chipset-vendor prefix, present on a huge installed base of unrelated
+  Atheros gear, so the OUI alone is not evidence of a camera.
+- **The two *factory-default* MACs in that block are a different story**, and
+  are checked exactly (all six bytes) by `fwDefaultMacMatch()`:
+  `00:03:7f:50:00:01` (`bdwlan30.bin`/`fakeboar.bin`) and
+  `00:03:7f:4f:00:16` (`otp30.bin`). Those are what the radio transmits while
+  still **unprovisioned**; provisioning rewrites the MAC, so this engine only
+  ever fires on a freshly-imaged unit — and there is no plausible unrelated
+  device transmitting from a factory default, which is why
+  `PTS_FW_DEFAULT_MAC` = 6 is the **one WiFi signal that can reach
+  `SCORE_ALERT` on its own**. It is checked *before* the mfr-tier test, and the
+  scan `continue`s on a match so the same network isn't also scored as a
+  low-confidence mfr hit.
 
 Each of these engines uses a per-scan "seen once" boolean (`fFlockOui`,
 `fCamSsid`, etc.) so a scan with multiple matching networks only scores

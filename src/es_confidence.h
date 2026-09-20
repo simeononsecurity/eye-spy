@@ -53,6 +53,12 @@
 #define PTS_FLOCK_BLE          5
 #define PTS_FLOCK_BLE_MFR      5   // BLE mfr-ID 0x09C8 (XUNTONG/Flock confirmed)
 #define PTS_RAVEN_BLE          5   // Raven GATT service UUIDs
+// Flock accessory / Nordic DFU GATT services (firmware dump, 2026-09-16).
+// Same weight as the Raven UUIDs: these are Flock-specific 128-bit UUIDs, so
+// they mean the same thing (a Flock accessory — typically a Penguin battery
+// pack — is on the air) but they are *not* Raven services, so they get their
+// own detector/tag instead of being logged as "Raven-BLE-UUID".
+#define PTS_FLOCK_GATT         5
 #define PTS_SKIMMER            5
 #define PTS_AIRTAG             4
 #define PTS_ODID_BLE           4
@@ -64,6 +70,15 @@
 #define PTS_IBEACON            2
 #define PTS_PERSIST            2
 #define PTS_FLOCK_OUI          5
+// Firmware-default radio MAC — an EXACT 6-byte match on a value that only
+// exists in the camera image's NVRAM/OTP blobs (see FLOCK_FW_DEFAULT_MACS in
+// es_detect.h). Deliberately the one WiFi signal that can reach SCORE_ALERT on
+// its own: every other engine here is a *pattern* that unrelated hardware can
+// also produce, whereas transmitting from a factory-default address means the
+// radio has never been provisioned — there is no plausible non-Flock device
+// doing that. Corollary: it can only ever fire on a fresh/never-provisioned
+// unit, so a provisioned camera will instead match on the assigned OUI above.
+#define PTS_FW_DEFAULT_MAC     6
 #define PTS_ALPR_OUI           5
 #define PTS_FLOCK_SSID         5
 #define PTS_ALPR_SSID          4
@@ -85,6 +100,7 @@ DECL_DETECTOR(rayban);
 DECL_DETECTOR(flockBle);
 DECL_DETECTOR(flockBleMfr);   // BLE mfr-ID 0x09C8 (XUNTONG)
 DECL_DETECTOR(ravenBle);      // Raven GATT service UUIDs
+DECL_DETECTOR(flockGatt);     // Flock accessory / Nordic DFU GATT services
 DECL_DETECTOR(skimmer);
 DECL_DETECTOR(airtag);
 DECL_DETECTOR(odidBle);
@@ -104,6 +120,10 @@ static unsigned long g_flockSsidScored      = 0;
 static unsigned long g_alprSsidScored       = 0;
 static unsigned long g_camOuiScored         = 0;
 static unsigned long g_camSsidScored        = 0;
+// Firmware-default radio MAC (exact 6-byte match on a scanned BSSID). Scored
+// inline like the other WiFi engines — it is discovered during the scan phase,
+// never from an ISR.
+static unsigned long g_fwDefaultMacScored   = 0;
 
 // ── Aggregate confidence score ────────────────────────────────────────────────
 static int           g_score      = 0;

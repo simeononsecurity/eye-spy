@@ -169,13 +169,68 @@ void test_all_tables_mutually_exclusive(void) {
 
 void test_oui_table_counts(void) {
     TEST_ASSERT_EQUAL_UINT(35u, (unsigned)NUM_FLOCK_OUIS);
-    TEST_ASSERT_EQUAL_UINT(6u,  (unsigned)NUM_FLOCK_MFR_OUIS);
+    // 6 Liteon/USI contract-mfr OUIs + 00:03:7f (Qualcomm Atheros QCA9377, the
+    // camera's radio — firmware-derived set, 2026-09-16). The QCA prefix is
+    // deliberately mfr-tier, NOT high-tier: it is a chipset vendor's block with
+    // a huge installed base of unrelated Atheros gear. Its two *factory-default*
+    // camera MACs are matched exactly, at high confidence, by
+    // fwDefaultMacMatch() instead (see test_fw_default_mac_* below).
+    TEST_ASSERT_EQUAL_UINT(7u,  (unsigned)NUM_FLOCK_MFR_OUIS);
     TEST_ASSERT_EQUAL_UINT(1u,  (unsigned)NUM_SOUNDTHINKING_OUIS);
     TEST_ASSERT_EQUAL_UINT(1u,  (unsigned)NUM_ALPR_OUIS);
     TEST_ASSERT_EQUAL_UINT(31u, (unsigned)NUM_CAM_OUIS);
+    TEST_ASSERT_EQUAL_UINT(2u,  (unsigned)NUM_FLOCK_FW_DEFAULT_MACS);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Firmware-default radio MACs (firmware-derived set, 2026-09-16) ───────────
+//
+// These are the QCA9377 factory defaults from the Flock camera firmware image
+// (bdwlan30.bin/fakeboar.bin and otp30.bin). The whole point is that they match
+// on ALL SIX bytes — the bare 00:03:7f OUI they sit in is shared with a huge
+// installed base of unrelated Atheros hardware, which is exactly why the OUI
+// is only mfr-tier.
+
+void test_fw_default_mac_known(void) {
+    uint8_t m1[6] = {0x00,0x03,0x7f,0x50,0x00,0x01};  // bdwlan30/fakeboar
+    uint8_t m2[6] = {0x00,0x03,0x7f,0x4f,0x00,0x16};  // otp30
+    TEST_ASSERT_TRUE(fwDefaultMacMatch(m1));
+    TEST_ASSERT_TRUE(fwDefaultMacMatch(m2));
+}
+
+void test_fw_default_mac_requires_full_match(void) {
+    // Same OUI, different suffix — must NOT be treated as a firmware default.
+    uint8_t near1[6] = {0x00,0x03,0x7f,0x50,0x00,0x02};
+    uint8_t near2[6] = {0x00,0x03,0x7f,0x4f,0x00,0x17};
+    uint8_t other[6] = {0x00,0x03,0x7f,0xaa,0xbb,0xcc};
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(near1));
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(near2));
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(other));
+}
+
+void test_fw_default_mac_no_match(void) {
+    uint8_t a[6] = {0xaa,0xbb,0xcc,0xdd,0xee,0xff};
+    uint8_t b[6] = {0x70,0xc9,0x4e,0x00,0x00,0x01};
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(a));
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(b));
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(nullptr));
+}
+
+// The firmware default MACs must be recognised ONLY by the exact-match path:
+// their OUI has to stay out of the high-confidence table (so a random
+// 00:03:7f device can't ride the strong signal), while still being recognised
+// as an mfr-tier OUI at low confidence.
+void test_qca_oui_tiering(void) {
+    const uint8_t oui[3] = {0x00, 0x03, 0x7f};
+    uint8_t random_ath[6];
+    macFromOui(oui, random_ath, 0x11, 0x22, 0x33);
+
+    TEST_ASSERT_TRUE (ouiMatch(random_ath, FLOCK_MFR_OUIS, NUM_FLOCK_MFR_OUIS));
+    TEST_ASSERT_FALSE(ouiMatch(random_ath, FLOCK_OUIS, NUM_FLOCK_OUIS));
+    // ...and a random 00:03:7f device is NOT an exact firmware-default match.
+    TEST_ASSERT_FALSE(fwDefaultMacMatch(random_ath));
+}
+
+// ── Table size sanity ─────────────────────────────────────────────────────────
 
 int main(void) {
     UNITY_BEGIN();
@@ -200,6 +255,11 @@ int main(void) {
 
     RUN_TEST(test_all_tables_mutually_exclusive);
     RUN_TEST(test_oui_table_counts);
+
+    RUN_TEST(test_fw_default_mac_known);
+    RUN_TEST(test_fw_default_mac_requires_full_match);
+    RUN_TEST(test_fw_default_mac_no_match);
+    RUN_TEST(test_qca_oui_tiering);
 
     return UNITY_END();
 }

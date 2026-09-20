@@ -19,10 +19,14 @@
 // Public interface expected by main.cpp:
 //   Pattern tables: CAM_OUIS/NUM_CAM_OUIS, FLOCK_OUIS/NUM_FLOCK_OUIS,
 //     FLOCK_MFR_OUIS/NUM_FLOCK_MFR_OUIS,
+//     FLOCK_FW_DEFAULT_MACS/NUM_FLOCK_FW_DEFAULT_MACS,
 //     SOUNDTHINKING_OUIS/NUM_SOUNDTHINKING_OUIS, ALPR_OUIS/NUM_ALPR_OUIS,
 //     FLOCK_SSID_KW, ALPR_SSID_KW, CAM_SSID_KW, FLOCK_BLE_NAMES,
-//     RAVEN_UUIDS, SKIMMER_NAMES
-//   Matching helpers: ouiMatch(), ssidHas(), strContainsCI()
+//     RAVEN_UUIDS, RAVEN_SVC_MIN/RAVEN_SVC_MAX, FLOCK_GATT_UUIDS,
+//     SKIMMER_NAMES
+//   Matching helpers: ouiMatch(), ssidHas(), strContainsCI(), ciEquals(),
+//     fwDefaultMacMatch(), bleNameShapeMatch(), ravenServiceInRange(),
+//     ravenService16FromUuidString(), ravenUuidInRange()
 
 #pragma once
 
@@ -83,8 +87,35 @@ static const uint8_t FLOCK_MFR_OUIS[][3] = {
     {0xd0,0x39,0x57},  // USI
     {0xe8,0xd0,0xfc},  // USI
     {0xe0,0x0a,0xf6},  // USI (dougborg/PR#39)
+    // Qualcomm Atheros — the QCA9377 is the radio in Flock's MSM8953-generation
+    // cameras (firmware dump, 2026-09-16). Deliberately LOW tier, not in
+    // FLOCK_OUIS above: unlike b4:1e:52, this is a chipset vendor's prefix with
+    // a huge installed base of unrelated Atheros gear, so the OUI alone is not
+    // evidence of a camera. The two *factory-default* MACs the camera ships
+    // with from this block ARE specific and are checked exactly, at high
+    // confidence, by fwDefaultMacMatch() (see FLOCK_FW_DEFAULT_MACS below).
+    {0x00,0x03,0x7f},  // Qualcomm Atheros QCA9377 (firmware dump, 2026-09-16)
 };
 #define NUM_FLOCK_MFR_OUIS (sizeof(FLOCK_MFR_OUIS)/sizeof(FLOCK_MFR_OUIS[0]))
+
+// ── Firmware-default radio MACs (full 6 bytes, exact match) ──────────────────
+// The *factory-default* QCA9377 radio addresses baked into the Flock camera
+// firmware image (MSM8953 + QCA9377 dump, 2026-09-16):
+//   00:03:7f:50:00:01 — bdwlan30.bin / fakeboar.bin (WLAN NVRAM)
+//   00:03:7f:4f:00:16 — otp30.bin                   (OTP / factory partition)
+//
+// WHY a separate exact-match table when 00:03:7f is already in the mfr list:
+// the *OUI* belongs to every other Atheros device on earth, but these two
+// *complete* addresses are what the radio transmits while still unprovisioned
+// (Flock's provisioning step rewrites the MAC). A 6-byte match on a factory
+// default is therefore near-zero-false-positive — hence PTS_FW_DEFAULT_MAC
+// scores it far above the +2 mfr-tier OUI hit. Corollary: this only ever fires
+// on a freshly-imaged / never-provisioned unit.
+static const uint8_t FLOCK_FW_DEFAULT_MACS[][6] = {
+    {0x00,0x03,0x7f,0x50,0x00,0x01},  // bdwlan30.bin / fakeboar.bin default
+    {0x00,0x03,0x7f,0x4f,0x00,0x16},  // otp30.bin default
+};
+#define NUM_FLOCK_FW_DEFAULT_MACS (sizeof(FLOCK_FW_DEFAULT_MACS)/sizeof(FLOCK_FW_DEFAULT_MACS[0]))
 
 // SoundThinking / ShotSpotter acoustic sensors — co-deployed with Flock ALPR (+4).
 static const uint8_t SOUNDTHINKING_OUIS[][3] = {
@@ -117,9 +148,12 @@ static const char* CAM_SSID_KW[] = {
     "flir", "mobotix", "hanwha", "genetec", nullptr
 };
 
-// Flock / Raven BLE device name patterns (case-insensitive substring)
+// Flock / Raven BLE device name patterns (case-insensitive substring).
+// "dfutarg" (Nordic legacy-DFU target) added from the firmware-derived set
+// (2026-09-16): the Penguin battery pack advertises it while receiving a
+// firmware update — the image bundles no.nordicsemi.android.dfu.
 static const char* FLOCK_BLE_NAMES[] = {
-    "flock", "raven", "penguin", "pigvision", "fs ext battery", nullptr
+    "flock", "raven", "penguin", "pigvision", "fs ext battery", "dfutarg", nullptr
 };
 
 // Raven GATT service UUIDs (GainSec research — full 128-bit)
@@ -132,6 +166,30 @@ static const char* RAVEN_UUIDS[] = {
     "00003500-0000-1000-8000-00805f9b34fb",  // Error
     "00001809-0000-1000-8000-00805f9b34fb",  // Health (legacy fw 1.1.x)
     "00001819-0000-1000-8000-00805f9b34fb",  // Location (legacy fw 1.1.x)
+    nullptr
+};
+
+// Raven camera services are advertised across the whole 16-bit range
+// 0x3100-0x3500, not just the round hundred values listed above. The services
+// that matter most are the ones NOT in that list: 0x3101 / 0x3102 expose GPS
+// latitude/longitude unauthenticated (firmware dump, 2026-09-16). Exact-string
+// matching alone therefore missed precisely the highest-value services, which
+// is what the range check in ravenServiceInRange() closes.
+#define RAVEN_SVC_MIN 0x3100
+#define RAVEN_SVC_MAX 0x3500
+
+// Flock accessory / Nordic DFU GATT services (firmware dump, 2026-09-16).
+// Flock's own accessory service — exposed by the Penguin battery packs — plus
+// the Nordic legacy DFU service the pack advertises while being flashed.
+// Kept in their own table (and given their own detector/tag) rather than being
+// appended to RAVEN_UUIDS[], because they are *not* Raven services and
+// reporting them as "Raven-BLE-UUID" would mislabel them on the dashboard.
+#define FLOCK_ACCESSORY_UUID "e8ccbb38-9532-46a8-9fe5-1814df172e6f"
+#define NORDIC_DFU_UUID      "00001530-1212-efde-1523-785feabcd123"
+
+static const char* FLOCK_GATT_UUIDS[] = {
+    FLOCK_ACCESSORY_UUID,
+    NORDIC_DFU_UUID,
     nullptr
 };
 
@@ -168,4 +226,104 @@ static inline bool ssidHas(const char* ssid, const char** kws) {
     for (const char** kw=kws; *kw; kw++)
         if (strstr(low,*kw)) return true;
     return false;
+}
+
+// ── Firmware-derived matching helpers (Flock camera firmware dump, 2026-09-16) ─
+
+// Exact match on a full 6-byte firmware-default radio MAC (see
+// FLOCK_FW_DEFAULT_MACS). Applied to a scanned BSSID.
+static inline bool fwDefaultMacMatch(const uint8_t* mac6) {
+    if (!mac6) return false;
+    for (size_t i = 0; i < NUM_FLOCK_FW_DEFAULT_MACS; i++) {
+        if (memcmp(mac6, FLOCK_FW_DEFAULT_MACS[i], 6) == 0) return true;
+    }
+    return false;
+}
+
+// Case-insensitive string equality, hand-rolled rather than using strcasecmp:
+// strcasecmp is POSIX, not ISO C, so pulling it in would make this header
+// (which must compile identically for the ESP32 target and the host test
+// build) depend on _GNU_SOURCE.
+static inline bool ciEquals(const char* a, const char* b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        a++; b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+// BLE device-name *shape* match — the firmware-derived naming forms a substring
+// keyword list cannot express, because a bare serial number contains no
+// distinguishing text to search for:
+//   "Penguin-NNNNNNNNNN" — exactly 10 digits after the dash
+//   "NNNNNNNNNN"         — a bare 10-digit serial, nothing else
+//   "FS Ext Battery"     — exact (case-insensitive)
+//   "DfuTarg"            — exact; Nordic legacy DFU target, advertised by the
+//                          Penguin pack while it is being firmware-updated
+static inline bool bleNameShapeMatch(const char* name) {
+    if (!name || !name[0]) return false;
+    if (ciEquals(name, "fs ext battery")) return true;
+    if (ciEquals(name, "dfutarg"))        return true;
+
+    // "penguin-" prefix (any case) + exactly 10 digits + end of string.
+    static const char* kPrefix = "penguin-";
+    size_t pi = 0;
+    while (kPrefix[pi] && name[pi] &&
+           tolower((unsigned char)name[pi]) == kPrefix[pi]) pi++;
+    if (kPrefix[pi] == '\0') {
+        const char* p = name + pi;
+        int d = 0;
+        while (p[d] >= '0' && p[d] <= '9') d++;
+        if (d == 10 && p[10] == '\0') return true;
+    }
+
+    // Bare 10-digit serial.
+    {
+        int d = 0;
+        while (name[d] >= '0' && name[d] <= '9') d++;
+        if (d == 10 && name[10] == '\0') return true;
+    }
+    return false;
+}
+
+// True when a 16-bit service UUID falls in the Raven camera range.
+static inline bool ravenServiceInRange(uint16_t svc16) {
+    return svc16 >= RAVEN_SVC_MIN && svc16 <= RAVEN_SVC_MAX;
+}
+
+// Extracts the 16-bit service value from either UUID string shape NimBLE hands
+// us: the canonical "00003101-0000-1000-8000-00805f9b34fb" expansion, or a
+// short "0x3101" / "3101". Returns -1 when the string is neither (e.g. a real
+// 128-bit vendor UUID). Hand-rolled hex parsing keeps this header free of
+// <cstdlib>/strtol.
+static inline int ravenService16FromUuidString(const char* uuid) {
+    if (!uuid) return -1;
+    while (*uuid == ' ') uuid++;
+    if (uuid[0] == '0' && (uuid[1] == 'x' || uuid[1] == 'X')) uuid += 2;
+
+    static const char* kBase = "-0000-1000-8000-00805f9b34fb";
+    const size_t n = strlen(uuid);
+
+    if (n != 4 && !(n == 8 + strlen(kBase) && ciEquals(uuid + 8, kBase)))
+        return -1;
+
+    // 16-bit value = LOW half of the 8-hex-digit group ("00003101" → 0x3101).
+    const int digits = (n == 4) ? 4 : 8;
+    int v = 0;
+    for (int i = 0; i < digits; i++) {
+        char c = uuid[i];
+        int h = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (h < 0) return -1;
+        v = (v << 4) | h;
+    }
+    return v & 0xFFFF;
+}
+
+// Convenience wrapper: does this UUID string denote an in-range Raven service?
+static inline bool ravenUuidInRange(const char* uuid) {
+    const int svc = ravenService16FromUuidString(uuid);
+    return svc >= 0 && ravenServiceInRange((uint16_t)svc);
 }

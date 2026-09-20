@@ -292,13 +292,23 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
             g_raybanDet=true; g_raybanRssi=rssi; g_raybanSeen=now; matched=true;
         }
 
-        // ── 3. Flock Safety BLE — device name (Flock/Raven/Penguin/Pigvision/FS Ext Battery)
+        // ── 3. Flock Safety BLE — device name.
+        //    Two forms (firmware-derived set, 2026-09-16):
+        //      (a) substring keywords — flock / raven / penguin / pigvision /
+        //          fs ext battery / dfutarg, and
+        //      (b) *shapes* a keyword list cannot express: a bare 10-digit
+        //          serial has no distinguishing text to search for at all, so
+        //          bleNameShapeMatch() also checks "Penguin-NNNNNNNNNN",
+        //          a bare serial, "FS Ext Battery" and "DfuTarg".
         if (!name.empty()) {
+            bool nameHit = false;
             for (const char** kw = FLOCK_BLE_NAMES; *kw; kw++) {
-                if (strContainsCI(name.c_str(), *kw)) {
-                    g_flockBleDet=true; g_flockBleRssi=rssi; g_flockBleSeen=now;
-                    matched=true; break;
-                }
+                if (strContainsCI(name.c_str(), *kw)) { nameHit = true; break; }
+            }
+            if (!nameHit && bleNameShapeMatch(name.c_str())) nameHit = true;
+            if (nameHit) {
+                g_flockBleDet=true; g_flockBleRssi=rssi; g_flockBleSeen=now;
+                matched=true;
             }
         }
 
@@ -353,6 +363,44 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
                     if (g_ravenBleCount == 0 || now - g_ravenBleLoggedAt >= DETECTION_RESCORE_MS) {
                         Serial.printf("[eyespy] Raven UUID %s RSSI=%d\n", *uuid, (int)rssi);
                     }
+                    matched=true; break;
+                }
+            }
+
+            // Range sweep (firmware-derived set, 2026-09-16). The named table
+            // above only holds the round-hundred services; the camera also
+            // advertises across the whole 0x3100-0x3500 range, and the services
+            // that actually leak GPS — 0x3101 / 0x3102 — are NOT in the table.
+            // Exact-string matching therefore missed precisely the highest-value
+            // services; this sweep is what catches them. See RAVEN_SVC_MIN/MAX
+            // and ravenUuidInRange() in es_detect.h.
+            //
+            // No Serial.printf here: this runs on the NimBLE host task, and the
+            // project rule for this callback is flag-only. The rate-limited
+            // "Raven-BLE-UUID" log from CHECK_DET() (loop context) reports it.
+            if (!g_ravenBleDet && adv->getServiceUUIDCount() > 0) {
+                const int nsvc = adv->getServiceUUIDCount();
+                for (int i = 0; i < nsvc; i++) {
+                    std::string u = adv->getServiceUUID(i).toString();
+                    if (ravenUuidInRange(u.c_str())) {
+                        g_ravenBleDet=true; g_ravenBleRssi=rssi; g_ravenBleSeen=now;
+                        matched=true; break;
+                    }
+                }
+            }
+        }
+
+        // ── 5b. Flock accessory / Nordic DFU GATT services (firmware-derived
+        //    set, 2026-09-16). Flock's own accessory service — exposed by the
+        //    Penguin battery packs — plus the Nordic legacy DFU service the pack
+        //    advertises while it is being flashed. A separate detector from
+        //    Raven because these are NOT Raven services: reporting them as
+        //    "Raven-BLE-UUID" would mislabel them.
+        //    Flag-only (no Serial) per the callback-context rule above.
+        if (!g_flockGattDet) {
+            for (const char** uuid = FLOCK_GATT_UUIDS; *uuid; uuid++) {
+                if (adv->isAdvertisingService(NimBLEUUID(*uuid))) {
+                    g_flockGattDet=true; g_flockGattRssi=rssi; g_flockGattSeen=now;
                     matched=true; break;
                 }
             }
@@ -495,13 +543,25 @@ static void processWifiScan(int n) {
     unsigned long now = millis();
     bool fFlockOui=false, fFlockMfrOui=false, fSoundthinking=false,
          fAlprOui=false,  fFlockSsid=false,   fAlprSsid=false,
-         fCamOui=false,   fCamSsid=false;
+         fCamOui=false,   fCamSsid=false,     fFwDefaultMac=false;
 
     for (int i = 0; i < n; i++) {
         if (WiFi.RSSI(i) < RSSI_MIN) continue;
         uint8_t*    bssid = WiFi.BSSID(i);
         const char* ssid  = WiFi.SSID(i).c_str();
 
+        // Firmware-default radio MAC (exact 6-byte match, firmware-derived set
+        // 2026-09-16). Checked FIRST because those addresses live inside the
+        // ubiquitous 00:03:7f Qualcomm Atheros prefix that the mfr-tier check
+        // below would otherwise claim at low confidence — the specific full
+        // address is the strong part, and it only ever appears on a unit that
+        // has not been provisioned yet.
+        if (!fFwDefaultMac && bssid && fwDefaultMacMatch(bssid)) {
+            Serial.printf("[eyespy] Flock-FW-default MAC %02x:%02x:%02x:%02x:%02x:%02x \"%s\"\n",
+                          bssid[0],bssid[1],bssid[2],bssid[3],bssid[4],bssid[5], ssid);
+            fFwDefaultMac = true;
+            continue;   // don't also report it as a low-confidence mfr hit
+        }
         // High-confidence Flock Safety OUI
         if (!fFlockOui && bssid && ouiMatch(bssid, FLOCK_OUIS, NUM_FLOCK_OUIS)) {
             Serial.printf("[eyespy] Flock-cam OUI %02x:%02x:%02x \"%s\"\n",
@@ -549,6 +609,7 @@ static void processWifiScan(int n) {
     if (fFlockOui)     addScore(PTS_FLOCK_OUI,     now, &g_flockOuiScored,     "Flock-cam-OUI");
     if (fFlockMfrOui)  addScore(PTS_FLOCK_MFR_OUI, now, &g_flockMfrOuiScored,  "Flock-mfr-OUI");
     if (fSoundthinking)addScore(PTS_SOUNDTHINKING,  now, &g_soundthinkingScored,"SoundThinking");
+    if (fFwDefaultMac) addScore(PTS_FW_DEFAULT_MAC, now, &g_fwDefaultMacScored,  "Flock-FW-MAC");
     if (fAlprOui)      addScore(PTS_ALPR_OUI,       now, &g_alprOuiScored,      "ALPR-OUI");
     if (fFlockSsid)    addScore(PTS_FLOCK_SSID,     now, &g_flockSsidScored,    "Flock-SSID");
     if (fAlprSsid)     addScore(PTS_ALPR_SSID,      now, &g_alprSsidScored,     "ALPR-SSID");
@@ -575,6 +636,7 @@ static void processBLE() {
     CHECK_DET(flockBle,    PTS_FLOCK_BLE,    "Flock-BLE-name");
     CHECK_DET(flockBleMfr, PTS_FLOCK_BLE_MFR,"Flock-BLE-mfrID");
     CHECK_DET(ravenBle,    PTS_RAVEN_BLE,    "Raven-BLE-UUID");
+    CHECK_DET(flockGatt,   PTS_FLOCK_GATT,   "Flock-GATT");
     CHECK_DET(skimmer,     PTS_SKIMMER,      "Skimmer");
     CHECK_DET(airtag,      PTS_AIRTAG,       "AirTag");
     CHECK_DET(odidBle,     PTS_ODID_BLE,     "ODID-BLE");
