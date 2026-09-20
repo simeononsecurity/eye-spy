@@ -157,7 +157,20 @@ full root-cause writeup.
     `PERSIST_MIN_MS` (5 min) within a single test session without waiting
     for ~3 full 21-scenario rotations (~21+ minutes) if folded into the
     main shuffle.
-  - Build/flash: `pio run -e atom-lite-beacon -t upload` (or the
+  - **Build/flash:** `pio run -e atom-lite-beacon -t upload` (or the
     platformio-mcp `build_project`/`upload_firmware` tools with
     `environment=atom-lite-beacon`). GPIO39 button force-advances to the
     next scenario early, for faster manual testing.
+  - **Both transmit paths report failures instead of swallowing them.**
+    `wifiApHoldWithMac()` now checks `WiFi.softAP()`'s bool and only prints
+    its `SoftAP up ...` line on success — it previously ignored the return
+    value *and* unconditionally claimed success, so "the detector missed my
+    SoftAP" and "my SoftAP never came up" were indistinguishable from the
+    serial log alone. `scenarioOdidWifi()` now counts every failed
+    `esp_wifi_80211_tx()`/`esp_wifi_set_channel()` call and prints one
+    cumulative `[esbeacon] WARN tx failed ...` line per scenario (per-frame
+    logging would flood a 20 s hold loop). **Check those WARN lines before
+    concluding a scenario exposed a detector bug** — they are the definitive
+    "did the frames actually go out over the air" answer, and without them a
+    tester-side TX refusal looks exactly like a detector-side miss. This
+    mirrors flock-you-esp32's `txSweep()` fix for the identical ambiguity.

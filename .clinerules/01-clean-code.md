@@ -52,6 +52,18 @@ this repository. They mirror the equivalent rules in the sibling
   lightweight `g_<name>Det/Rssi/Seen` flags and let `processBLE()`'s
   `CHECK_DET()` macro (running from the main `loop()` task) do any
   heavier work (scoring, logging).
+- **Never `++`/`--` a `volatile` counter — use `+= 1`.** Increment/
+  decrement of a volatile-qualified object is deprecated in C++20 (P1152R4,
+  `-Wvolatile`), but note this is *latent* here rather than an active
+  warning: eye-spy pins `espressif32@6.7.0` (Arduino core 2.0.16 = xtensa
+  GCC 8.4), which predates that deprecation and cannot even compile
+  `-std=gnu++20` — verified directly: `xtensa-esp32-elf-g++ 8.4.0` rejects
+  `-std=gnu++20` and emits no `-Wvolatile` for a volatile `++` in any std
+  mode it does support. The sibling flock-you-esp32 project runs core
+  3.x/gnu++20, where the identical pattern produced 24 warnings in one
+  commit, so this convention is mirrored here for consistency and so a
+  future core-3.x migration is warning-free by construction.
+  `m5basic_display.h`'s `mbe_logVersion += 1` is the one current instance.
 - **Only the UI task touches M5Unified/display objects.** Per
   `ui_task.h`'s own documented contract, `M5.update()`, button reads,
   vibration, and all display draws happen exclusively on the dedicated UI
@@ -77,6 +89,22 @@ this repository. They mirror the equivalent rules in the sibling
   the identical bug independently (unconditional redraw on every call) and
   was fixed the same way, via a `mbe_logVersion` counter and a
   `force`/no-force parameter.
+- **M5Unified's lazy-init paths can silently swallow failures — call
+  `M5.Speaker.begin()` explicitly and check it.** `M5.Speaker.tone()` lazily
+  calls `Speaker_Class::begin()` on first use, but the lazy-init guard inside
+  `_play_raw()` returns *success* even when that `begin()` fails (codec
+  enable-register write or I2S peripheral setup failing) — producing total
+  audio silence with zero error trace anywhere, indistinguishable from
+  "speaker working but nothing audible" until you read `Speaker_Class.cpp`
+  yourself. `main.cpp`'s `USE_M5_SPEAKER` block (`atom-voice`) therefore calls
+  `begin()` itself and logs a `WARN` when it returns false. The same block
+  also logs `M5.getBoard()`: M5Unified identifies I2S-speaker boards by
+  probing for their codec on the I2C bus, and silently falls back to a
+  *different* board identity (with no speaker pins configured at all) when
+  that probe misses — without the logged board ID, "wrong board
+  auto-detected" and "speaker init failed" are indistinguishable in serial
+  output. (Same root cause and fix as flock-you-esp32's documented
+  `M5.Speaker.begin()` gotcha.)
 
 
 ## Reviewing your own changes

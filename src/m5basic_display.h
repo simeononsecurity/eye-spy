@@ -142,7 +142,15 @@ static void mbe_logAdd(const char* text) {
                 memcpy(mbe_logBuf[i], mbe_logBuf[i - 1], MBE_LOG_LINE_LEN);
             memcpy(mbe_logBuf[0], p, n);
             mbe_logBuf[0][n] = '\0';
-            mbe_logVersion++;
+            // Compound assignment, not `++`: incrementing a volatile-qualified
+            // object is deprecated as of C++20 (P1152R4 / -Wvolatile). It does
+            // NOT warn on this project's current toolchain (espressif32@6.7.0 =
+            // Arduino core 2.0.16 = xtensa GCC 8.4, which predates that
+            // deprecation and cannot even compile -std=gnu++20), but it would
+            // warn immediately after any migration to Arduino core 3.x
+            // (gnu++20) -- which is what happened in flock-you-esp32. Cheap
+            // future-proofing; semantics are identical for a scalar counter.
+            mbe_logVersion += 1;
             portEXIT_CRITICAL(&mbe_logMux);
         }
         if (!nl) break;

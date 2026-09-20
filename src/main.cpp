@@ -683,12 +683,29 @@ void setup() {
     {
         auto m5cfg = M5.config();
         M5.begin(m5cfg);
+        // Log the auto-detected board identity: M5Unified identifies
+        // I2S-speaker boards by probing for their codec on the I2C bus, and
+        // silently falls back to a *different* board identity (with no speaker
+        // pins configured at all) if that probe misses. Without this line,
+        // "wrong board detected" and "Speaker_Class failed to init" are
+        // indistinguishable -- both just produce total silence with no error
+        // anywhere.
+        Serial.printf("[eyespy] M5 board autodetect = %d\n", (int)M5.getBoard());
         auto spk_cfg = M5.Speaker.config();
         spk_cfg.pin_data_out = 22;
         spk_cfg.pin_bck      = 19;
         spk_cfg.pin_ws       = 33;
         M5.Speaker.config(spk_cfg);
-        M5.Speaker.begin();
+        // Speaker_Class::begin() returns bool, and M5Unified's lazy-init path
+        // inside tone()/_play_raw() reports *success* even when begin() fails
+        // (codec enable-register write or I2S setup failing) -- i.e. total
+        // silence with no error trace anywhere. So call it explicitly and log a
+        // failure rather than relying on the lazy path. (Same root cause as
+        // flock-you-esp32's documented M5.Speaker.begin() gotcha.)
+        if (!M5.Speaker.begin()) {
+            Serial.println("[eyespy] WARN M5.Speaker.begin() FAILED -- audio "
+                           "alerts will be silent on this board");
+        }
         M5.Speaker.setVolume(220);
     }
     M5.Speaker.tone(880,  100); delay(150);

@@ -276,9 +276,21 @@ static void wifiApHoldWithMac(const uint8_t mac[6], const char* ssid, uint32_t h
     Serial.printf("[esbeacon] esp_wifi_set_mac FAILED rc=%d -- AP will broadcast "
                   "with its real MAC instead of the spoofed OUI this scenario\n", (int)rc);
   }
-  WiFi.softAP(ssid);
-  Serial.printf("[esbeacon] SoftAP up  ssid=\"%s\"  bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                ssid, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  // A failed softAP() start means this scenario was never broadcast at all.
+  // The old code ignored this bool AND unconditionally printed "SoftAP up",
+  // i.e. it actively claimed success for a scenario that never went out --
+  // making "the detector missed my AP" and "my AP never came up"
+  // indistinguishable from the serial log alone. Same class of bug as
+  // flock-you-esp32's beacon tester silently ignoring esp_wifi_80211_tx()'s
+  // return value. (Clean Code: never silently swallow an error return value.)
+  if (WiFi.softAP(ssid)) {
+    Serial.printf("[esbeacon] SoftAP up  ssid=\"%s\"  bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                  ssid, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  } else {
+    Serial.printf("[esbeacon] WARN WiFi.softAP() FAILED ssid=\"%s\" -- this AP "
+                  "scenario was NOT broadcast, so a detector miss here proves "
+                  "nothing\n", ssid);
+  }
   holdWithButtonPoll(holdMs);
   WiFi.softAPdisconnect(true);
   // Restore the STA/disconnected baseline so subsequent BLE and
@@ -511,6 +523,19 @@ static void scenarioFlockMfrOui() {
 // WIFI PROMISCUOUS SCENARIO (1) — odidWifi, raw frame injection
 // ============================================================
 
+// Transmission and channel-switch failures are COUNTED and reported, never
+// ignored.
+// This used to swallow both esp_wifi_set_channel()'s and
+// esp_wifi_80211_tx()'s return values, which made a scenario whose frames the
+// driver refused to inject look — from the detector's side — exactly like a
+// detector-side matching or phase-timing miss. Same fix, and same rationale,
+// as flock-you-esp32's beacon tester txSweep(). (Clean Code: never silently
+// swallow an error return value.)
+static uint32_t  esTxErrCount = 0;   // total failed esp_wifi_80211_tx()
+static uint32_t  esChErrCount = 0;   // total failed esp_wifi_set_channel()
+static esp_err_t esTxLastErr  = ESP_OK;
+static esp_err_t esChLastErr  = ESP_OK;
+
 static void scenarioOdidWifi() {
   uint8_t buf[ES_BF_MAX_FRAME];
   size_t len = esbfBuildBeacon(buf, NAN_DEST_MAC, ODID_SRC_MAC, ODID_SRC_MAC, "ES-ODID-Test");
@@ -520,11 +545,26 @@ static void scenarioOdidWifi() {
   uint8_t ci = 0;
   while (millis() - start < SCENARIO_HOLD_MS) {
     ledTick();
-    esp_wifi_set_channel(ODID_CHANNELS[ci], WIFI_SECOND_CHAN_NONE);
-    esp_wifi_80211_tx(WIFI_IF_STA, buf, (int)len, false);
+    esp_err_t cerr = esp_wifi_set_channel(ODID_CHANNELS[ci], WIFI_SECOND_CHAN_NONE);
+    if (cerr != ESP_OK) { esChErrCount++; esChLastErr = cerr; }
+    esp_err_t terr = esp_wifi_80211_tx(WIFI_IF_STA, buf, (int)len, false);
+    if (terr != ESP_OK) { esTxErrCount++; esTxLastErr = terr; }
     ci = (uint8_t)((ci + 1) % ODID_CHANNELS_COUNT);
     if (buttonPressed()) break;
     delay(ODID_BURST_GAP_MS);
+  }
+
+  // Reported once per scenario (this loop runs for the whole SCENARIO_HOLD_MS,
+  // so per-frame logging would flood the console). Counts are cumulative, so
+  // repeated lines across scenarios show the growth.
+  if (esTxErrCount || esChErrCount) {
+    Serial.printf("[esbeacon] WARN tx failed %lu time(s) (last err=0x%X %s), "
+                  "set_channel failed %lu time(s) (last err=0x%X %s) -- the "
+                  "ODID burst may not have gone out over the air\n",
+                  (unsigned long)esTxErrCount, (unsigned)esTxLastErr,
+                  esp_err_to_name(esTxLastErr),
+                  (unsigned long)esChErrCount, (unsigned)esChLastErr,
+                  esp_err_to_name(esChLastErr));
   }
 }
 

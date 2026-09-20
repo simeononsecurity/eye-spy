@@ -21,6 +21,18 @@ this workflow before considering any firmware change complete.
    (M5Unified display + button path), and both a `-ble` and non-`-ble`
    flavor of whichever variant you're testing where both exist. A change
    that only compiles for one board/config can silently break another.
+   **Excluding `lilygo-t-dongle-c5`:** that environment currently cannot build
+   at all on this project's pinned toolchain, and its failure is not a
+   regression. `platformio.ini` uses `espressif32@6.7.0` (Arduino core
+   2.0.16), which ships no `platformio-build-esp32c5.py` SConscript, so the
+   build dies in ~0.2 s with `*** missing SConscript file
+   .../framework-arduinoespressif32/tools/platformio-build-esp32c5.py`. The
+   ESP32-C5 requires Arduino core 3.x — which is why the sibling
+   flock-you-esp32 project's equivalent C5 environment is pinned to the
+   pioarduino `platform-espressif32` release instead. CI builds this env as a
+   separate `continue-on-error: true` step so it never fails the workflow.
+   Treat a C5 build failure as expected until this env is migrated to a
+   core-3.x platform.
 2. **Also run the native unit tests.** `pio test -e native` (or the
    platformio-mcp `run_tests` tool) runs the Unity host-side tests in
    `test/test_oui_matching/` and `test/test_ssid_ble_matching/` (32 tests
