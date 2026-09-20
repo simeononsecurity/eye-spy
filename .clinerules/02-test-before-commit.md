@@ -112,3 +112,14 @@ this workflow before considering any firmware change complete.
   `git log` for examples of this style, e.g. the `NimBLEScan::start()`
   overload-resolution fix — eye-spy's own `startBLEScan()` fix follows the
   same template).
+- **Re-generate the printable guides if you touch `docs/print/`.**
+  `docs/print/quick-start-*.pdf` are committed artifacts built from
+  `docs/print/make_quick_start_pdfs.py`, so editing the guide text without
+  re-running the generator leaves the PDFs stale — and the PDFs are the copy
+  non-technical users actually read. Run
+  `python3 docs/print/make_quick_start_pdfs.py` after any edit there.
+  Add `--check` to measure only: each page's content height is compared with
+  its fixed card height and an overflowing page exits non-zero. That gate
+  exists because `.page` uses `overflow: hidden`, so over-long text is
+  clipped in the PDF with no error anywhere — the same class of silent
+  failure as the dropped-detection parser bug above.

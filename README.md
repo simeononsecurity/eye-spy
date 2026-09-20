@@ -9,6 +9,10 @@
 
 Continuously monitors Bluetooth LE and WiFi for recording devices, surveillance cameras, ALPR (license-plate reader) systems, drones, and personal trackers. A confidence-score system drives a single RGB LED indicator so you get an at-a-glance privacy threat level at all times.
 
+**Printable guides for non-technical users:**
+[4x6 pocket card](docs/print/quick-start-4x6.pdf) &middot;
+[8.5x11 sheet](docs/print/quick-start-letter.pdf)
+
 ---
 
 ## LED Indicators
