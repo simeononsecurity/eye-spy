@@ -67,8 +67,253 @@ _RE_SCORE  = re.compile(r'\[eyespy\] \+(\d+) \(([^)]+)\)\s+score=(\d+)')
 _RE_STATUS = re.compile(r'\[eyespy\] status\s+score=(\d+)\s+(\w+)\s+phase=(\w+)\s+tracked=(\d+)')
 _RE_DECAY  = re.compile(r'\[eyespy\] decay\s+score=(\d+)')
 _RE_BLE    = re.compile(r'\[eyespy\] (.+?)\s{2,}RSSI=(-?\d+)')
-_RE_WIFI   = re.compile(r'\[eyespy\] (.+?) OUI ([0-9a-fA-F:]{8})\s+"([^"]*)"')
-_RE_WIFI2  = re.compile(r'\[eyespy\] (.+?) OUI ([0-9a-fA-F:]{8})')
+# Firmware-default radio MAC line — note it says "MAC", not "OUI", because it is
+# an exact full-address match rather than an OUI-prefix match, so neither
+# _RE_WIFI nor _RE_WIFI2 (both of which require the literal word "OUI") can
+# parse it. Without this regex the detection was silently dropped by the API
+# entirely — it reached this parser and returned None, so nothing was ever
+# recorded on the dashboard. Matched before _RE_WIFI/_RE_WIFI2.
+_RE_FWMAC  = re.compile(r'\[eyespy\] (Flock-FW-default MAC) ([0-9a-fA-F:]{17})\s+"([^"]*)"')
+# \s+ rather than a single space after "OUI": the firmware prints several of
+# these lines with the OUI column *right-aligned* (e.g. "[eyespy] ALPR OUI      00:0e:58",
+# "[eyespy] SoundThinking OUI d4:11:d6"), and the original single-space pattern
+# silently failed to parse every padded one — those detections never reached the
+# dashboard. Same class of bug as the missing _RE_SSID below.
+_RE_WIFI   = re.compile(r'\[eyespy\] (.+?) OUI\s+([0-9a-fA-F:]{8})\s+"([^"]*)"')
+_RE_WIFI2  = re.compile(r'\[eyespy\] (.+?) OUI\s+([0-9a-fA-F:]{8})')
+# SSID-only lines ("[eyespy] Flock SSID \"...\"", ALPR SSID, cam SSID). These
+# have no OUI to match on, so neither _RE_WIFI nor _RE_WIFI2 could parse them --
+# meaning every SSID-keyword detection was silently dropped by this API and
+# never reached the dashboard or the exports. Found by feeding the firmware's
+# own log lines through parse_eyespy_line() and asserting none returned None.
+_RE_SSID   = re.compile(r'\[eyespy\] (.+? SSID)\s+"([^"]*)"')
+
+# ---------------------------------------------------------------------------
+# Firmware-derived detection signatures  (Flock camera firmware dump,
+# 2026-09-16; upstream colonelpanichacks/flock-you)
+# ---------------------------------------------------------------------------
+#
+# The subset of the detection set extracted from a real Flock Safety ALPR camera
+# firmware image (Qualcomm MSM8953 + QCA9377, Android 8.1, codename "hpnotiq"),
+# as distinct from the community field-research tables. The match itself runs on
+# the ESP32 (src/es_detect.h / es_confidence.h); this copy exists so the
+# dashboard can label which detections rest on firmware-derived evidence.
+#
+# Where the tags come from, given this API parses the firmware's *text* log
+# lines rather than JSON:
+#   - the parsed `oui` field (the OUI prefix the firmware printed)
+#   - the parsed `detection_method` string, for the paths whose specificity
+#     isn't recoverable from the OUI alone (exact factory-default MAC, GATT)
+#   - `ssid` when the firmware printed one
+#   - BLE name / service-UUID / SDP fields, which only exist on *imported*
+#     records — eye-spy's own BLE log line carries the classification but not
+#     the advertised name (see the note on BLE name shapes below)
+FIRMWARE_TARGET_OUIS = (
+    "b4:1e:52",   # Flock Safety's own IEEE MA-L registration
+    "00:03:7f",   # Qualcomm Atheros QCA9377 default-radio prefix
+)
+
+FIRMWARE_DEFAULT_MACS = (
+    "00:03:7f:50:00:01",   # bdwlan30.bin / fakeboar.bin factory default
+    "00:03:7f:4f:00:16",   # otp30.bin factory default
+)
+
+FIRMWARE_SSID_KEYWORDS = (
+    "flock",           # "Flock-XXXXXX" SoftAP + bare "Flock"
+    "penguin",         # Penguin battery pack
+    "fs ext battery",  # FS Ext Battery pack
+)
+
+FIRMWARE_BLE_MFG_IDS = (0x09C8,)   # XUNTONG (Penguin pack, serial in payload)
+
+FIRMWARE_BLE_GATT_UUIDS = (
+    "e8ccbb38-9532-46a8-9fe5-1814df172e6f",  # Flock accessory service
+    "00001530-1212-efde-1523-785feabcd123",  # Nordic legacy DFU service
+)
+
+FIRMWARE_RAVEN_SVC_RANGE = (0x3100, 0x3500)
+
+# Classic-Bluetooth corroboration (same firmware dump).
+#
+# HOST-SIDE ONLY: the ESP32 runs NimBLE, which cannot do Classic BT at all, so
+# these never arrive from our own firmware — they come from host-side tooling or
+# imported captures. Tagged anyway so an imported record carries the same
+# evidence labels as anything else, and because they are useful *next to* a BLE
+# hit: a device advertising the MSM8953 platform's default BT name, or an SDP
+# Device-ID record naming Qualcomm vendor 0x001D / product 0x1200
+# (`bt_did.conf`), is the camera's Bluetooth stack showing through. Both names
+# are generic platform/Android defaults, so corroborating only — never standalone.
+CLASSIC_BT_DEVICE_NAMES = ("msm8953_32", "android")
+CLASSIC_BT_SDP_DEVICE_ID = {
+    "vendor_id": 0x001D,   # Qualcomm
+    "product_id": 0x1200,
+}
+
+_BLE_NAME_PATTERNS = (
+    (re.compile(r"^penguin-\d{10}$", re.IGNORECASE), "ble_name:penguin_serial"),
+    (re.compile(r"^\d{10}$"), "ble_name:bare_serial"),
+    (re.compile(r"^fs ext battery$", re.IGNORECASE), "ble_name:fs_ext_battery"),
+    (re.compile(r"^dfutarg$", re.IGNORECASE), "ble_name:dfutarg"),
+)
+
+# firmware detection_method string -> signature tag. Only for paths whose
+# specificity the parsed `oui` field cannot convey. Keys are the strings this API
+# actually ends up with after parsing, lower-cased — note the OUI lines parse to
+# the prefix WITHOUT "OUI" ("Flock-cam", "Flock-mfr", "ALPR", "SoundThinking",
+# "cam"), because _RE_WIFI captures everything before the literal " OUI ".
+#
+# Deliberately NO "flock-mfr" entry: that method fires for every mfr-tier OUI
+# (e0:0a:f6, f4:6a:dd, …), so mapping it to "oui:00:03:7f" would tag unrelated
+# OUIs as firmware-derived. The genuine 00:03:7f case is tagged from the parsed
+# `oui` field instead, which is exact.
+_METHOD_TAGS = {
+    # The API receives the full address for this one (_RE_FWMAC captures it), so
+    # the mac check below also fires; this entry is belt-and-braces for anyone
+    # replaying a line whose MAC formatting differs.
+    "flock-fw-default mac": "mac:fw_default",
+    # The firmware's Flock-GATT detector matches EITHER the Flock accessory
+    # service or the Nordic DFU service, and the log line carries no UUID — so
+    # this tag means "a firmware-derived Flock GATT service matched", not
+    # specifically the accessory one.
+    "flock-gatt":           "gatt:flock_accessory",
+    "flock-ble-mfrid":      "ble_mfg:0x09c8",
+    "raven-ble-uuid":       "gatt:raven_service",
+}
+
+def _parse_int_flexible(value):
+    """Accept an int, a decimal string ("2504") or a hex string ("0x09c8")."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    for base in (0, 16):
+        try:
+            return int(text, base)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+def _normalized_mac(value) -> str:
+    """Lower-case colon-separated MAC, tolerating dashes and None."""
+    if not value:
+        return ""
+    return str(value).replace("-", ":").strip().lower()
+
+def _gatt_signatures(uuids) -> list:
+    """Signature tags for advertised GATT service UUIDs."""
+    tags = []
+    for raw in uuids:
+        text = str(raw).strip().lower()
+        if text in FIRMWARE_BLE_GATT_UUIDS:
+            tags.append("gatt:flock_accessory" if "e8ccbb38" in text else "gatt:nordic_dfu")
+            continue
+        # 16-bit service: "0x3101"/"3101", or the canonical 128-bit expansion
+        # NimBLE emits. The value is the LOW half of the first 32-bit group —
+        # "00003101-..." is 0x3101, not 0x0000. (The upstream Python equivalent
+        # captured the high half, so it never matched the canonical form.)
+        value = _parse_int_flexible(text)
+        if value is None:
+            m = re.match(r"^([0-9a-f]{8})-0000-1000-8000-00805f9b34fb$", text)
+            if m:
+                value = int(m.group(1), 16) & 0xFFFF
+        if (value is not None
+                and FIRMWARE_RAVEN_SVC_RANGE[0] <= value <= FIRMWARE_RAVEN_SVC_RANGE[1]):
+            tags.append(f"gatt:raven_service:0x{value:04x}")
+    return tags
+
+
+def firmware_signature_matches(data: dict) -> list:
+    """Firmware-derived signature tags for one detection record.
+
+    Returns tags such as "oui:b4:1e:52", "mac:fw_default",
+    "ssid_keyword:penguin" or "classic_bt_name:msm8953_32". Empty list when
+    nothing in the firmware-derived set matched.
+    """
+    if not isinstance(data, dict):
+        return []
+    tags = []
+
+    oui = str(data.get("oui") or "").strip().lower()
+    if oui in FIRMWARE_TARGET_OUIS:
+        tags.append(f"oui:{oui}")
+
+    if _normalized_mac(data.get("mac_address")) in FIRMWARE_DEFAULT_MACS:
+        tags.append("mac:fw_default")
+
+    method_tag = _METHOD_TAGS.get(str(data.get("detection_method") or "").strip().lower())
+    if method_tag:
+        tags.append(method_tag)
+
+    ssid = data.get("ssid")
+    if ssid:
+        lowered = str(ssid).lower()
+        for keyword in FIRMWARE_SSID_KEYWORDS:
+            if keyword in lowered:
+                tags.append(f"ssid_keyword:{keyword}")
+
+    name = data.get("device_name") or data.get("name")
+    if name:
+        text = str(name).strip()
+        for pattern, tag in _BLE_NAME_PATTERNS:
+            if pattern.match(text):
+                tags.append(tag)
+                break
+        lowered_name = text.lower()
+        for keyword in ("penguin", "fs ext battery", "dfutarg"):
+            if keyword in lowered_name:
+                tags.append(f"ble_name:{keyword.replace(' ', '_')}")
+        # Classic-Bluetooth corroboration (host-side / imported only — see the
+        # CLASSIC_BT_* constant comments).
+        if lowered_name in CLASSIC_BT_DEVICE_NAMES:
+            tags.append(f"classic_bt_name:{lowered_name}")
+
+    vendor = _parse_int_flexible(data.get("sdp_vendor_id", data.get("vendor_id")))
+    product = _parse_int_flexible(data.get("sdp_product_id", data.get("product_id")))
+    if (vendor == CLASSIC_BT_SDP_DEVICE_ID["vendor_id"]
+            and product == CLASSIC_BT_SDP_DEVICE_ID["product_id"]):
+        tags.append("classic_bt_sdp_did:qualcomm_001d_1200")
+
+    company = _parse_int_flexible(
+        data.get("company_id") or data.get("mfg_company_id")
+        or data.get("manufacturer_company_id"))
+    if company is not None and company in FIRMWARE_BLE_MFG_IDS:
+        tags.append(f"ble_mfg:0x{company:04x}")
+
+    uuids = []
+    for key in ("service_uuids", "gatt_services", "service_uuid"):
+        value = data.get(key)
+        if isinstance(value, (list, tuple)):
+            uuids.extend(value)
+        elif value:
+            uuids.append(value)
+    tags.extend(_gatt_signatures(uuids))
+
+    # Dedupe, preserving order (a UUID list can repeat a service).
+    seen = set()
+    unique = []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            unique.append(tag)
+    return unique
+
+def tag_firmware_signatures(data: dict) -> dict:
+    """Merge firmware-derived tags onto a detection dict, in place.
+
+    Sets two additive fields (existing fields are untouched):
+      matched_signatures — ordered union of every firmware-derived signature
+                           tag that hit.
+      firmware_sig       — True when at least one such signature matched.
+    """
+    matched = list(data.get("matched_signatures") or [])
+    for tag in firmware_signature_matches(data):
+        if tag not in matched:
+            matched.append(tag)
+    data["matched_signatures"] = matched
+    data["firmware_sig"] = bool(matched)
+    return data
+
 
 def parse_eyespy_line(line):
     global g_score, g_status, g_phase, g_tracked
@@ -88,12 +333,23 @@ def parse_eyespy_line(line):
         status='ALERT' if g_score>=6 else 'CAUTION' if g_score>=3 else 'CLEAR'
         socketio.emit('score_update', {'score':g_score,'status':status,'phase':g_phase,'tracked':g_tracked})
         return {'detection_type':'score','detection_method':method,'protocol':'multi','points':pts,'score_after':g_score}
+    m = _RE_FWMAC.match(line)
+    if m: return {'detection_type':'wifi','detection_method':m.group(1),'protocol':'wifi',
+                  # Unlike the OUI rows below, the *full* address is known here —
+                  # the firmware matched the whole 6-byte factory default — so
+                  # store it as-is rather than a fabricated ":xx:xx:xx" tail.
+                  'mac_address':m.group(2),'oui':m.group(2)[:8],'ssid':m.group(3),'rssi':None}
     m = _RE_WIFI.match(line)
     if m: return {'detection_type':'wifi','detection_method':m.group(1),'protocol':'wifi',
                   'mac_address':m.group(2)+':xx:xx:xx','oui':m.group(2),'ssid':m.group(3),'rssi':None}
     m = _RE_WIFI2.match(line)
     if m: return {'detection_type':'wifi','detection_method':m.group(1),'protocol':'wifi',
                   'mac_address':m.group(2)+':xx:xx:xx','oui':m.group(2),'ssid':'','rssi':None}
+    # SSID-only match: no MAC is known (the firmware only matched on the SSID
+    # keyword), so mac_address/oui stay None — same convention the BLE rows use.
+    m = _RE_SSID.match(line)
+    if m: return {'detection_type':'wifi','detection_method':m.group(1),'protocol':'wifi',
+                  'mac_address':None,'oui':None,'ssid':m.group(2),'rssi':None}
     m = _RE_BLE.match(line)
     if m: return {'detection_type':'ble','detection_method':m.group(1),'protocol':'ble',
                   'mac_address':None,'rssi':int(m.group(2))}
@@ -101,6 +357,10 @@ def parse_eyespy_line(line):
 
 def add_detection(data):
     global det_id_counter, detections
+    # Tag firmware-derived signature hits, unioned onto anything already on the
+    # record (see the signature block above). Every ingest path funnels through
+    # here, so live serial lines and imported records get identical tags.
+    tag_firmware_signatures(data)
     now = time.time()
     data['id'] = det_id_counter; det_id_counter += 1
     data['timestamp'] = datetime.fromtimestamp(now).isoformat()
@@ -228,10 +488,13 @@ def export_csv():
     buf = io.StringIO()
     fields = ['id','detection_time','detection_type','detection_method','protocol',
               'mac_address','oui','ssid','rssi','score_at_time','alert_level',
+              'firmware_sig','matched_signatures',
               'gps.latitude','gps.longitude','gps.altitude','gps.satellites']
     w = csv.DictWriter(buf, fieldnames=fields, extrasaction='ignore'); w.writeheader()
     for d in detections:
         row = {k: d.get(k,'') for k in fields}
+        # matched_signatures is a list — join it so the cell stays readable.
+        row['matched_signatures'] = '; '.join(d.get('matched_signatures') or [])
         gps = d.get('gps') or {}
         for gk in ('latitude','longitude','altitude','satellites'): row['gps.'+gk] = gps.get(gk,'')
         w.writerow(row)

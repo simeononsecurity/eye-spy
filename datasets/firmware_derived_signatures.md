@@ -26,7 +26,7 @@ architecture differs.
 | Flock accessory service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` | `FLOCK_GATT_UUIDS[0]` | `PTS_FLOCK_GATT` = 5 |
 | Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | `FLOCK_GATT_UUIDS[1]` | `PTS_FLOCK_GATT` = 5 |
 | Raven services `0x3100`–`0x3500` (range) | `RAVEN_SVC_MIN`/`RAVEN_SVC_MAX` + `ravenUuidInRange()` | `PTS_RAVEN_BLE` = 5 |
-| Classic BT names / SDP Device-ID | **not implemented** — the ESP32's NimBLE stack has no Classic BT | — |
+| Classic BT names / SDP Device-ID | `api/eyespy.py` only: `CLASSIC_BT_DEVICE_NAMES` + `CLASSIC_BT_SDP_DEVICE_ID` | tagged `classic_bt_name:…` / `classic_bt_sdp_did:qualcomm_001d_1200` — **not implementable on the ESP32**, whose NimBLE stack has no Classic BT |
 
 ## Differences from flock-you-esp32 worth knowing
 
@@ -46,6 +46,15 @@ architecture differs.
   exception to the multi-signal philosophy — see `.clinerules/04-detection-methods.md`.
 - **The `onResult()` BLE callback stays flag-only** (no `Serial.print`); the
   `flockGatt`/`ravenBle` log lines come from `CHECK_DET()` in loop context.
+- **API-side tagging reads the firmware's text log, not JSON.** `api/eyespy.py`
+  derives tags from the parsed `oui` field and the `detection_method` string
+  (plus `ssid`), so the exact factory-default MAC is tagged via the
+  `Flock-FW-default MAC` method rather than by re-checking a MAC the API never
+  sees in full. Consequence worth knowing: eye-spy's BLE log line carries the
+  classification but *not* the advertised device name, so the
+  `ble_name:penguin_serial` / `bare_serial` / `dfutarg` tags can only be
+  produced for **imported** records that include a `device_name` field — not
+  from eye-spy's own live serial stream.
 - The Raven range sweep and the Flock-GATT table are **separate** detectors on
   purpose: the Flock accessory service is not a Raven service, and reporting it
   as one would mislabel it on the dashboard.

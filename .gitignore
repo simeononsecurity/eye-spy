@@ -16,3 +16,14 @@
 session.json
 session.tmp
 prev_session.json
+
+# Python bytecode (api/eyespy.py is run directly, so __pycache__/ appears as
+# soon as it or any helper module is imported)
+__pycache__/
+*.pyc
+
+# Flask API runtime output. The README's quick start runs from api/, so this
+# lands there: data/ holds the pickled detection store (eye-spy streams its
+# CSV/JSON/KML exports in memory, so there is no exports/ dir). Contains field
+# detection data — never source-controlled.
+api/data/

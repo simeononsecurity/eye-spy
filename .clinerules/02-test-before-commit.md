@@ -86,6 +86,21 @@ this workflow before considering any firmware change complete.
 9. **Don't declare victory on a single successful run.** Radio-based tests
    are inherently a little noisy. Repeat the test at least once, or
    capture a long-enough window, to make sure a fix is robust.
+10. **When you add or change a firmware `Serial.printf()` detection line,
+   verify the dashboard API can actually parse it.** `api/eyespy.py` is a
+   *text-line* parser (`_RE_*` regexes), so any line it doesn't recognise is
+   silently dropped — the detection never reaches the dashboard, the
+   session, or any export, and nothing anywhere reports an error. This has
+   already bitten twice: every SSID-only line (`[eyespy] Flock SSID "…"`,
+   ALPR SSID, cam SSID) went unparsed because the regexes only handled
+   `… OUI <mac> "…"` forms, and the padded right-aligned OUI lines
+   (`[eyespy] ALPR OUI      00:0e:58`) failed because the pattern after
+   `OUI` was a single literal space. Verification method that found both:
+   instantiate *every* `Serial.printf("[eyespy] …")` format string from
+   `src/` with plausible values, run them through `parse_eyespy_line()`, and
+   assert that every detection-producing line returns a dict (only
+   status / decay / `WiFi done` / boot lines may legitimately return
+   `None`). Re-run that check whenever the log format changes.
 
 ## Before committing
 
