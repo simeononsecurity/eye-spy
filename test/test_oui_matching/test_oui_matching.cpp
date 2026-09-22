@@ -169,17 +169,31 @@ void test_all_tables_mutually_exclusive(void) {
 
 void test_oui_table_counts(void) {
     TEST_ASSERT_EQUAL_UINT(35u, (unsigned)NUM_FLOCK_OUIS);
-    // 6 Liteon/USI contract-mfr OUIs + 00:03:7f (Qualcomm Atheros QCA9377, the
+    // 7 Liteon/USI contract-mfr OUIs + 00:03:7f (Qualcomm Atheros QCA9377, the
     // camera's radio — firmware-derived set, 2026-09-16). The QCA prefix is
     // deliberately mfr-tier, NOT high-tier: it is a chipset vendor's block with
     // a huge installed base of unrelated Atheros gear. Its two *factory-default*
     // camera MACs are matched exactly, at high confidence, by
     // fwDefaultMacMatch() instead (see test_fw_default_mac_* below).
-    TEST_ASSERT_EQUAL_UINT(7u,  (unsigned)NUM_FLOCK_MFR_OUIS);
+    // 14:b5:cd (Liteon) was missing from both tables entirely; it went here for
+    // the same shared-silicon reason as f4:6a:dd / f8:a2:d6.
+    TEST_ASSERT_EQUAL_UINT(8u,  (unsigned)NUM_FLOCK_MFR_OUIS);
     TEST_ASSERT_EQUAL_UINT(1u,  (unsigned)NUM_SOUNDTHINKING_OUIS);
     TEST_ASSERT_EQUAL_UINT(1u,  (unsigned)NUM_ALPR_OUIS);
     TEST_ASSERT_EQUAL_UINT(31u, (unsigned)NUM_CAM_OUIS);
     TEST_ASSERT_EQUAL_UINT(2u,  (unsigned)NUM_FLOCK_FW_DEFAULT_MACS);
+}
+
+// 14:b5:cd (Liteon) was absent from both OUI tables — the community dataset has
+// 32 prefixes and this repo carried 31. It belongs in the mfr tier, NOT
+// FLOCK_OUIS: Liteon silicon ships in unrelated consumer devices, which is why
+// f4:6a:dd / f8:a2:d6 are there.
+void test_mfr_14b5cd_present_but_not_high(void) {
+    uint8_t oui[3] = {0x14,0xb5,0xcd};
+    uint8_t mac[6];
+    macFromOui(oui, mac);
+    TEST_ASSERT_TRUE(ouiMatch(mac, FLOCK_MFR_OUIS, NUM_FLOCK_MFR_OUIS));
+    TEST_ASSERT_FALSE(ouiMatch(mac, FLOCK_OUIS, NUM_FLOCK_OUIS));
 }
 
 // ── Firmware-default radio MACs (firmware-derived set, 2026-09-16) ───────────
@@ -255,6 +269,7 @@ int main(void) {
 
     RUN_TEST(test_all_tables_mutually_exclusive);
     RUN_TEST(test_oui_table_counts);
+    RUN_TEST(test_mfr_14b5cd_present_but_not_high);
 
     RUN_TEST(test_fw_default_mac_known);
     RUN_TEST(test_fw_default_mac_requires_full_match);

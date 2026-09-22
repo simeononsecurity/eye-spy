@@ -360,10 +360,13 @@ static void scenarioFlockBle() {
 }
 
 static void scenarioFlockBleMfr() {
-  uint8_t mfr[3] = {0xC8, 0x09, 0x00};  // LE company ID 0x09C8 (XUNTONG/Flock)
+  // Derive from the shared table rather than hardcoding a second copy of the
+  // company ID, so the tester cannot drift from the detector's matcher.
+  const uint16_t companyId = FLOCK_BLE_MFR_IDS[0];
+  uint8_t mfr[3] = { (uint8_t)(companyId & 0xFF), (uint8_t)(companyId >> 8), 0x00 };
   NimBLEAdvertisementData data;
   data.setManufacturerData(std::string((char*)mfr, sizeof(mfr)));
-  Serial.println("[esbeacon] flockBleMfr  id=0x09C8");
+  Serial.printf("[esbeacon] flockBleMfr  id=0x%04X\n", (unsigned)companyId);
   bleAdvertiseAndHold(data, SCENARIO_HOLD_MS);
 }
 

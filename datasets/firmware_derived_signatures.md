@@ -22,9 +22,10 @@ architecture differs.
 | SSID keyword `fs ext` (covers `FS Ext Battery`) | `FLOCK_SSID_KW[]` | `PTS_FLOCK_SSID` = 5 |
 | BLE name `DfuTarg` | `FLOCK_BLE_NAMES[]` | `PTS_FLOCK_BLE` = 5 |
 | BLE name shapes (`Penguin-`+10 digits, bare 10-digit serial, `FS Ext Battery`, `DfuTarg`) | `bleNameShapeMatch()` | `PTS_FLOCK_BLE` = 5 |
-| BLE mfr company ID `0x09C8` (XUNTONG) | checked inline in `onResult()` | `PTS_FLOCK_BLE_MFR` = 5 |
+| BLE mfr company ID `0x09C8` (XUNTONG) | `FLOCK_BLE_MFR_IDS[]` + `flockBleMfrIdMatch()` | `PTS_FLOCK_BLE_MFR` = 5 |
 | Flock accessory service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` | `FLOCK_GATT_UUIDS[0]` | `PTS_FLOCK_GATT` = 5 |
 | Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | `FLOCK_GATT_UUIDS[1]` | `PTS_FLOCK_GATT` = 5 |
+| Raven vendor services (GPS/Power/Network/Upload/Error) | `RAVEN_UUIDS[]` (5 vendor-only entries) | `PTS_RAVEN_BLE` = 5 |
 | Raven services `0x3100`–`0x3500` (range) | `RAVEN_SVC_MIN`/`RAVEN_SVC_MAX` + `ravenUuidInRange()` | `PTS_RAVEN_BLE` = 5 |
 | Classic BT names / SDP Device-ID | `api/eyespy.py` only: `CLASSIC_BT_DEVICE_NAMES` + `CLASSIC_BT_SDP_DEVICE_ID` | tagged `classic_bt_name:…` / `classic_bt_sdp_did:qualcomm_001d_1200` — **not implementable on the ESP32**, whose NimBLE stack has no Classic BT |
 
@@ -58,9 +59,19 @@ architecture differs.
 - The Raven range sweep and the Flock-GATT table are **separate** detectors on
   purpose: the Flock accessory service is not a Raven service, and reporting it
   as one would mislabel it on the dashboard.
+- **Standard Bluetooth SIG services are deliberately excluded from Raven
+  matching.** `0x180A` (Device Information), `0x1809` (Health Thermometer) and
+  `0x1819` (Location and Navigation) appear in GainSec's write-up — Raven fw
+  1.1.x advertises `0x1809`/`0x1819` in place of its own health/location
+  services — but they are on essentially every BLE device ever made, so treating
+  them as Raven evidence makes ordinary hardware (fitness bands, watches,
+  earbuds) register as surveillance equipment. They are kept in
+  `RAVEN_LEGACY_UUIDS[]` for firmware-version estimation only, and
+  `service16IsStandardSvc()` blocks them at the match site as well.
 
 ## Status
 
-Build-verified across every eye-spy environment, and unit-tested (46 host-side
-tests, including all-six-byte matching, name shapes, and the range parser), but
-**not yet observed against a live camera** — field coverage is unmeasured.
+Build-verified across every eye-spy environment, and unit-tested (52 host-side
+tests, including all-six-byte matching, name shapes, the range parser, and the
+standard-service exclusions), but **not yet observed against a live camera** —
+field coverage is unmeasured.

@@ -320,7 +320,10 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
                 const uint8_t* m = (const uint8_t*)mfrData.data();
                 // BLE mfr data is little-endian company ID: 0x09C8 → bytes C8 09
                 uint16_t cid = (uint16_t)(m[0] | (m[1] << 8));
-                if (cid == 0x09C8) {
+                // Shared table in es_detect.h — the literal 0x09C8 used to be
+                // inlined here, so adding a second Flock company ID would have
+                // silently not taken effect.
+                if (flockBleMfrIdMatch(cid)) {
                     g_flockBleMfrDet=true; g_flockBleMfrRssi=rssi; g_flockBleMfrSeen=now;
                     matched=true;
                 }

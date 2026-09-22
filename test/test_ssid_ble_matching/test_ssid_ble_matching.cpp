@@ -147,19 +147,97 @@ void test_skimmer_names_contents(void) {
 }
 
 // ── RAVEN_UUIDS — table sanity ────────────────────────────────────────────────
-// Confirms parity with flock-you-esp32's FY_RAVEN_UUID_COUNT (8 full 128-bit
-// GATT service UUIDs from GainSec research).
+// 5 VENDOR-SPECIFIC GATT service UUIDs (GainSec research). The three standard
+// Bluetooth SIG assignments that used to be listed here (0x180A Device
+// Information, 0x1809 Health Thermometer, 0x1819 Location and Navigation) were
+// removed because they are advertised by essentially every BLE device in
+// existence — scoring them as Raven evidence makes ordinary hardware (fitness
+// bands, watches, earbuds) register as surveillance equipment. This test
+// previously asserted a count of 8 and checked 0x3100 positively.
 
 void test_raven_uuids_count_and_contents(void) {
     int count = 0;
     for (const char** u = RAVEN_UUIDS; *u; u++) count++;
-    TEST_ASSERT_EQUAL_INT(8, count);
+    TEST_ASSERT_EQUAL_INT(5, count);
 
     bool sawGps = false;
     for (const char** u = RAVEN_UUIDS; *u; u++) {
         if (strcmp(*u, "00003100-0000-1000-8000-00805f9b34fb") == 0) sawGps = true;
     }
     TEST_ASSERT_TRUE(sawGps);
+}
+
+// The standard SIG services must NOT be matchable as Raven evidence, whether by
+// the named table or by the 16-bit range check.
+void test_raven_standard_services_never_alert(void) {
+    const char* std_uuids[] = {
+        "0000180a-0000-1000-8000-00805f9b34fb",  // Device Information
+        "00001809-0000-1000-8000-00805f9b34fb",  // Health Thermometer
+        "00001819-0000-1000-8000-00805f9b34fb",  // Location and Navigation
+    };
+    for (int i = 0; i < 3; i++) {
+        // Not in the alerting table...
+        bool inTable = false;
+        for (const char** u = RAVEN_UUIDS; *u; u++) {
+            if (strcmp(*u, std_uuids[i]) == 0) inTable = true;
+        }
+        TEST_ASSERT_FALSE_MESSAGE(inTable, std_uuids[i]);
+        // ...and not reachable through the range parser either.
+        TEST_ASSERT_FALSE(ravenUuidInRange(std_uuids[i]));
+    }
+    // They are still retained as firmware-estimation evidence.
+    int legacy = 0;
+    for (const char** u = RAVEN_LEGACY_UUIDS; *u; u++) legacy++;
+    TEST_ASSERT_EQUAL_INT(3, legacy);
+}
+
+// Regression guard: no entry in the alerting table may be a standard service,
+// so re-adding one fails here rather than on a user's wrist.
+void test_raven_table_has_no_standard_services(void) {
+    for (const char** u = RAVEN_UUIDS; *u; u++) {
+        int svc = ravenService16FromUuidString(*u);
+        TEST_ASSERT_FALSE_MESSAGE(
+            svc >= 0 && service16IsStandardSvc((uint16_t)svc), *u);
+    }
+}
+
+void test_service16_standard_classifier(void) {
+    TEST_ASSERT_TRUE(service16IsStandardSvc(0x1800));   // Generic Access
+    TEST_ASSERT_TRUE(service16IsStandardSvc(0x1809));
+    TEST_ASSERT_TRUE(service16IsStandardSvc(0x180A));
+    TEST_ASSERT_TRUE(service16IsStandardSvc(0x1819));
+    // Raven's vendor range is not a SIG assignment, so it stays matchable —
+    // including 0x3101/0x3102, the GPS-leaking services.
+    TEST_ASSERT_FALSE(service16IsStandardSvc(0x3100));
+    TEST_ASSERT_FALSE(service16IsStandardSvc(0x3101));
+    TEST_ASSERT_FALSE(service16IsStandardSvc(0x3102));
+    TEST_ASSERT_FALSE(service16IsStandardSvc(0x3500));
+}
+
+// ── CVE-2025-59409 — the truncated "flck" spelling ───────────────────────────
+
+void test_ssidHas_test_flck_cve(void) {
+    // "test_flck" is the development Wi-Fi credential string Flock's
+    // Falcon/Sparrow firmware shipped in production. It contains no "flock"
+    // substring (f-l-c-k vs f-l-o-c-k), so without the dedicated "flck" keyword
+    // such a camera is invisible to the SSID engine.
+    TEST_ASSERT_TRUE(ssidHas("test_flck", FLOCK_SSID_KW));
+    TEST_ASSERT_TRUE(ssidHas("flck", FLOCK_SSID_KW));
+    // Transposed spelling is NOT a match — "flkc" != "flck".
+    TEST_ASSERT_FALSE(ssidHas("TEST_FLKC", FLOCK_SSID_KW));
+    // And "flck" did not become a catch-all.
+    TEST_ASSERT_FALSE(ssidHas("flick", FLOCK_SSID_KW));      // f-l-i-c-k
+    TEST_ASSERT_FALSE(ssidHas("MyHomeWiFi", FLOCK_SSID_KW));
+}
+
+// ── Flock BLE manufacturer company IDs ───────────────────────────────────────
+
+void test_flock_ble_mfr_ids(void) {
+    TEST_ASSERT_EQUAL_UINT(1u, (unsigned)NUM_FLOCK_BLE_MFR_IDS);
+    TEST_ASSERT_EQUAL_UINT(0x09C8u, (unsigned)FLOCK_BLE_MFR_IDS[0]);
+    TEST_ASSERT_TRUE(flockBleMfrIdMatch(0x09C8));
+    TEST_ASSERT_FALSE(flockBleMfrIdMatch(0x05A7));   // pre-PR#39 wrong value
+    TEST_ASSERT_FALSE(flockBleMfrIdMatch(0x0000));
 }
 
 // ── nullptr-termination sanity across all pattern arrays ─────────────────────
@@ -301,6 +379,11 @@ int main(void) {
 
     RUN_TEST(test_skimmer_names_contents);
     RUN_TEST(test_raven_uuids_count_and_contents);
+    RUN_TEST(test_raven_standard_services_never_alert);
+    RUN_TEST(test_raven_table_has_no_standard_services);
+    RUN_TEST(test_service16_standard_classifier);
+    RUN_TEST(test_ssidHas_test_flck_cve);
+    RUN_TEST(test_flock_ble_mfr_ids);
     RUN_TEST(test_pattern_arrays_null_terminated);
 
     RUN_TEST(test_ble_name_shape_penguin_serial);

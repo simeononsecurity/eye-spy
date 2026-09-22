@@ -38,7 +38,7 @@ Score decays −1 point every 60 seconds. Each detection type has a 120-second r
 | 2 | **Ray-Ban Meta** smart glasses | BLE service UUID `0xFD5F` | +5 🔴 |
 | 3 | **Flock Safety BLE** | BLE device name containing "Flock", "Raven", "Penguin", "Pigvision", "FS Ext Battery" or "DfuTarg", **or** matching a firmware-derived name *shape*: `Penguin-` + 10 digits, a bare 10-digit serial, `FS Ext Battery`, `DfuTarg` | +5 🔴 |
 | 4 | **Flock accessory GATT** (battery pack) | Advertised service UUID = Flock accessory service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` or Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | +5 🔴 |
-| 5 | **Raven surveillance device** | Advertised service UUID matches the named Raven GATT services **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** — the range catches `0x3101`/`0x3102`, which expose GPS unauthenticated | +5 🔴 |
+| 5 | **Raven surveillance device** | Advertised service UUID matches the named **vendor** Raven GATT services **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** — the range catches `0x3101`/`0x3102`, which expose GPS unauthenticated. Standard Bluetooth SIG services (`0x180A`/`0x1809`/`0x1819`) are deliberately **excluded** — they are on essentially every BLE device ever made | +5 🔴 |
 | 6 | **Card skimmer** (HC-03/05/06) | BLE device name exact match — Bluetooth modules commonly found in payment-terminal skimmers | +5 🔴 |
 | 7 | **Apple AirTag** | Manufacturer data `0x004C` subtype `0x12`/`0x1E`, or raw payload `1E FF 4C 00` / `4C 00 12` | +4 🔴 |
 | 8 | **Drone (OpenDroneID BLE)** | BLE service UUID `0xFFFA`, or raw AD service-data payload with app code `0x0D` | +4 🔴 |
@@ -55,11 +55,11 @@ Score decays −1 point every 60 seconds. Each detection type has a 120-second r
 | 14 | **Flock Safety camera** (OUI) | BSSID matches the 35-entry Flock Safety OUI table (`b4:1e:52`, `82:6b:f2`, `70:c9:4e`, FS-Ext-Battery prefixes, …) | +5 🔴 |
 | 15 | **Unprovisioned Flock camera** (firmware-default MAC) | BSSID is **exactly** `00:03:7f:50:00:01` or `00:03:7f:4f:00:16` — the QCA9377 factory-default radio addresses from the camera firmware image. Full 6-byte match, and the only WiFi signal that reaches the alert threshold on its own (see below) | +6 🔴 |
 | 16 | **ALPR / LPR camera** (OUI) | BSSID matches Motorola Solutions / Vigilant Solutions OUI `00:0e:58` | +5 🔴 |
-| 17 | **Flock keyword SSID** | SSID contains: `flock`, `flocksafety`, `fs ext`, `penguin`, `pigvision`, `raven` | +5 🔴 |
+| 17 | **Flock keyword SSID** | SSID contains: `flock`, `flocksafety`, `fs ext`, `penguin`, `pigvision`, `raven`, `flck` (the truncated `test_flck` spelling from **CVE-2025-59409** — Flock's leaked development Wi-Fi credential string) | +5 🔴 |
 | 18 | **ALPR keyword SSID** | SSID contains: `alpr`, `lpr`, `vigilant`, `plateread`, `licenseplat`, `motorola`, `automate` | +4 🔴 |
 | 19 | **Surveillance camera vendor** (OUI) | BSSID matches 31-entry camera OUI table — Hikvision, Dahua, Axis, Ring, Nest, Arlo, Wyze, Reolink, FLIR, Amcrest, Vivotek, Hanwha, Mobotix, Ubiquiti UniFi | +3 🟡 |
 | 20 | **Camera keyword SSID** | SSID contains: `cam`, `ipcam`, `cctv`, `nvr`, `dvr`, `doorbell`, `surv`, `blink`, `lorex`, `protect`, `genetec`, and more | +2 🟡 |
-| 21 | **Flock contract-mfr OUI** | BSSID matches the 7-entry contract-manufacturer table (Liteon/USI, plus `00:03:7f` Qualcomm Atheros — the camera's QCA9377 radio block, shared with unrelated Atheros gear) | +2 🟡 |
+| 21 | **Flock contract-mfr OUI** | BSSID matches the 8-entry contract-manufacturer table (Liteon/USI — incl. `14:b5:cd` — plus `00:03:7f` Qualcomm Atheros, the camera's QCA9377 radio block, shared with unrelated Atheros gear) | +2 🟡 |
 
 ### WiFi promiscuous — passive sniff, channel-hopping
 
@@ -204,13 +204,13 @@ project:
 
 ```bash
 cd eye-spy
-pio test -e native                              # run all 46 tests
-pio test -e native -f test_oui_matching          # OUI table + firmware-default MAC matching (19)
-pio test -e native -f test_ssid_ble_matching     # SSID / BLE-name / GATT / Raven-range matching (27)
+pio test -e native                              # run all 52 tests
+pio test -e native -f test_oui_matching          # OUI table + firmware-default MAC matching (20)
+pio test -e native -f test_ssid_ble_matching     # SSID / BLE-name / GATT / Raven-range matching (32)
 ```
 
-All **46 tests pass** against the current `es_detect.h`. The test suite covers:
-- All 35 `FLOCK_OUIS`, 7 `FLOCK_MFR_OUIS` (incl. `00:03:7f`), and 31 `CAM_OUIS` prefixes
+All **52 tests pass** against the current `es_detect.h`. The test suite covers:
+- All 35 `FLOCK_OUIS`, 8 `FLOCK_MFR_OUIS` (incl. `00:03:7f` and `14:b5:cd`), and 31 `CAM_OUIS` prefixes
 - SoundThinking and ALPR OUI isolation (not present in any other table)
 - Cross-table mutual-exclusion (no OUI prefix appears in more than one table)
 - `FLOCK_SSID_KW` / `ALPR_SSID_KW` / `CAM_SSID_KW` keyword matching (case-insensitive)
@@ -225,7 +225,12 @@ All **46 tests pass** against the current `es_detect.h`. The test suite covers:
 - Raven service **range** `0x3100`–`0x3500` (including `0x3101`/`0x3102`, the
   GPS-leaking services the named table alone missed) and out-of-range rejection
 - 16-bit service parsing from both UUID shapes (canonical 128-bit and `0x3101`)
-- `SKIMMER_NAMES` and `RAVEN_UUIDS` table contents/counts
+- `SKIMMER_NAMES` table contents/counts, and `RAVEN_UUIDS` **vendor-only** count
+  (the standard SIG services `0x180A`/`0x1809`/`0x1819` must never match, whether
+  via the table or the range parser — three tests enforce this)
+- `FLOCK_SSID_KW` matching for the CVE-2025-59409 `test_flck` spelling
+- `FLOCK_BLE_MFR_IDS` / `flockBleMfrIdMatch()` (incl. rejection of the old
+  incorrect `0x05A7`)
 - nullptr-termination sanity for every pattern array
 
 ---

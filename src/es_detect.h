@@ -83,6 +83,12 @@ static const uint8_t FLOCK_OUIS[][3] = {
 static const uint8_t FLOCK_MFR_OUIS[][3] = {
     {0xf4,0x6a,0xdd},  // Liteon Technology
     {0xf8,0xa2,0xd6},  // Liteon Technology
+    // 14:b5:cd is Liteon too (per the IEEE lookup in oui.txt), so it belongs in
+    // this low-confidence table rather than FLOCK_OUIS: Liteon silicon ships in
+    // unrelated consumer devices, which is exactly why f4:6a:dd / f8:a2:d6 are
+    // here. The community dataset lists it flat, but copying that classification
+    // would put a shared contract-manufacturer prefix at high confidence.
+    {0x14,0xb5,0xcd},  // Liteon Technology
     {0x00,0xf4,0x8d},  // Universal Scientific Industrial (USI)
     {0xd0,0x39,0x57},  // USI
     {0xe8,0xd0,0xfc},  // USI
@@ -131,7 +137,14 @@ static const uint8_t ALPR_OUIS[][3] = {
 
 // Flock-specific SSID keywords (score +5)
 static const char* FLOCK_SSID_KW[] = {
-    "flock", "flocksafety", "fs ext", "penguin", "pigvision", "raven", nullptr
+    "flock", "flocksafety", "fs ext", "penguin", "pigvision", "raven",
+    // "flck" covers the TRUNCATED spelling used by CVE-2025-59409: Flock's
+    // Falcon/Sparrow firmware (OPM1.171019.026) ships development Wi-Fi
+    // credentials ("test_flck") in cleartext in production firmware.
+    // "test_flck" has no "flock" substring (f-l-c-k vs f-l-o-c-k), so without
+    // this entry such a camera is invisible to the SSID engine.
+    "flck",
+    nullptr
 };
 
 // General ALPR keyword SSIDs (score +4)
@@ -156,14 +169,50 @@ static const char* FLOCK_BLE_NAMES[] = {
     "flock", "raven", "penguin", "pigvision", "fs ext battery", "dfutarg", nullptr
 };
 
-// Raven GATT service UUIDs (GainSec research — full 128-bit)
+// ── Flock BLE manufacturer company IDs ───────────────────────────────────────
+// 0x09C8 = XUNTONG Technology, the BLE chipset vendor confirmed on Flock
+// Penguin battery-pack advertisements (wgreenberg/flock-you). SINGLE SOURCE OF
+// TRUTH: main.cpp used to compare against the literal 0x09C8 directly, so a
+// second ID added here would silently not have taken effect — the same
+// duplication the BLE *name* list avoids.
+// (Pre-PR#39 upstream firmware used 0x05A7, which is wrong — that company ID
+// belongs to Assa Abloy.)
+static const uint16_t FLOCK_BLE_MFR_IDS[] = { 0x09C8 };
+#define NUM_FLOCK_BLE_MFR_IDS \
+    (sizeof(FLOCK_BLE_MFR_IDS)/sizeof(FLOCK_BLE_MFR_IDS[0]))
+
+static inline bool flockBleMfrIdMatch(uint16_t companyId) {
+    for (size_t i = 0; i < NUM_FLOCK_BLE_MFR_IDS; i++) {
+        if (FLOCK_BLE_MFR_IDS[i] == companyId) return true;
+    }
+    return false;
+}
+
+// Raven GATT service UUIDs (GainSec research — full 128-bit).
+//
+// VENDOR-SPECIFIC SERVICES ONLY. 0x180A (Device Information), 0x1809 (Health
+// Thermometer) and 0x1819 (Location and Navigation) were previously listed here
+// because GainSec's write-up includes them (Raven fw 1.1.x advertises
+// 0x1809/0x1819 as stand-ins for its own health/location services). They are
+// *standard Bluetooth SIG services*, advertised by essentially every BLE device
+// in existence — phones, watches, earbuds, fitness bands — so scoring them as
+// Raven evidence makes ordinary hardware register as surveillance equipment.
+// They are now firmware-estimation evidence only (see RAVEN_LEGACY_UUIDS) and
+// are additionally blocked by `service16IsStandardSvc()` so a future edit
+// cannot reintroduce them.
 static const char* RAVEN_UUIDS[] = {
-    "0000180a-0000-1000-8000-00805f9b34fb",  // Device Information
     "00003100-0000-1000-8000-00805f9b34fb",  // GPS
     "00003200-0000-1000-8000-00805f9b34fb",  // Power
     "00003300-0000-1000-8000-00805f9b34fb",  // Network
     "00003400-0000-1000-8000-00805f9b34fb",  // Upload
     "00003500-0000-1000-8000-00805f9b34fb",  // Error
+    nullptr
+};
+
+// Legacy 16-bit assignments kept for firmware-version estimation only — never
+// matched as Raven evidence.
+static const char* RAVEN_LEGACY_UUIDS[] = {
+    "0000180a-0000-1000-8000-00805f9b34fb",  // Device Information
     "00001809-0000-1000-8000-00805f9b34fb",  // Health (legacy fw 1.1.x)
     "00001819-0000-1000-8000-00805f9b34fb",  // Location (legacy fw 1.1.x)
     nullptr
@@ -177,6 +226,30 @@ static const char* RAVEN_UUIDS[] = {
 // is what the range check in ravenServiceInRange() closes.
 #define RAVEN_SVC_MIN 0x3100
 #define RAVEN_SVC_MAX 0x3500
+
+// ── Standard Bluetooth SIG services — never vendor evidence ──────────────────
+// Adopted SIG services are advertised by an enormous share of ordinary BLE
+// hardware (phones, watches, earbuds, fitness bands, laptops). Matching one as
+// if it identified a specific product is a false-positive generator; the ones
+// that used to be listed in RAVEN_UUIDS (0x180A Device Information, 0x1809
+// Health Thermometer, 0x1819 Location and Navigation) are the reason this list
+// exists. Consulted by ravenServiceInRange() and asserted by a unit test that
+// walks RAVEN_UUIDS.
+static const uint16_t SERVICE16_STANDARD[] = {
+    0x1800, 0x1801, 0x1804, 0x1805, 0x1808, 0x1809, 0x180A, 0x180D, 0x180F,
+    0x1810, 0x1811, 0x1812, 0x1813, 0x1814, 0x1815, 0x1816, 0x1818, 0x1819,
+    0x181A, 0x181C, 0x181D, 0x181E, 0x181F, 0x1820, 0x1821, 0x1822, 0x1823,
+    0x1826, 0x183A
+};
+#define NUM_SERVICE16_STANDARD \
+    (sizeof(SERVICE16_STANDARD)/sizeof(SERVICE16_STANDARD[0]))
+
+static inline bool service16IsStandardSvc(uint16_t svc16) {
+    for (size_t i = 0; i < NUM_SERVICE16_STANDARD; i++) {
+        if (SERVICE16_STANDARD[i] == svc16) return true;
+    }
+    return false;
+}
 
 // Flock accessory / Nordic DFU GATT services (firmware dump, 2026-09-16).
 // Flock's own accessory service — exposed by the Penguin battery packs — plus
@@ -288,7 +361,13 @@ static inline bool bleNameShapeMatch(const char* name) {
 }
 
 // True when a 16-bit service UUID falls in the Raven camera range.
+//
+// A standard Bluetooth SIG service is explicitly rejected even though none of
+// the 0x3100-0x3500 range is a SIG assignment today: this is the invariant that
+// keeps "a standard service is never Raven evidence" true if the range is ever
+// widened or a standard UUID is added to the table. See SERVICE16_STANDARD.
 static inline bool ravenServiceInRange(uint16_t svc16) {
+    if (service16IsStandardSvc(svc16)) return false;
     return svc16 >= RAVEN_SVC_MIN && svc16 <= RAVEN_SVC_MAX;
 }
 
