@@ -15,10 +15,13 @@
  *  4.  Flock BLE mfr ID     — company 0x09C8 (XUNTONG, confirmed Flock) → +5 ALERT
  *  5.  Raven surveillance   — GATT svc UUID 0x3100/0x3200/0x3300/…      → +5 ALERT
  *  6.  Skimmer (HC-03/05/06)— BLE device name exact match               → +5 ALERT
- *  7.  AirTag               — mfr 0x004C subtype 0x12                   → +4 ALERT
+ *  7.  AirTag               — mfr 0x004C subtype 0x12                   → +6 ALERT
+ *                             ONLY after ~30 min of sustained presence  (watching before that)
  *  8.  OpenDroneID BLE      — svc UUID 0xFFFA / raw AD payload          → +4 ALERT
- *  9.  SmartTag (Samsung)   — svc UUID 0xFD5A                           → +3 CAUTION
- * 10.  Tile tracker         — svc UUID 0xFEED or 0xFEEC                 → +3 CAUTION
+ *  9.  SmartTag (Samsung)   — svc UUID 0xFD5A                           → +6 ALERT, same 30-min gate
+ * 10.  Tile tracker         — svc UUID 0xFEED or 0xFEEC                 → +6 ALERT, same 30-min gate
+ *                             (trackers held back because they are constantly in
+ *                              range of ordinary people; see es_detect.h's gate)
  * 11.  MeshCore             — name prefix "MeshCore-"                   → +2 CAUTION
  * 12.  iBeacon              — mfr 0x004C type 0x02 len 0x15             → +2 CAUTION
  * 13.  Persistent unknown   — same MAC seen ≥3× over ≥5 min             → +2 CAUTION
@@ -641,11 +644,14 @@ static void processBLE() {
     CHECK_DET(ravenBle,    PTS_RAVEN_BLE,    "Raven-BLE-UUID");
     CHECK_DET(flockGatt,   PTS_FLOCK_GATT,   "Flock-GATT");
     CHECK_DET(skimmer,     PTS_SKIMMER,      "Skimmer");
-    CHECK_DET(airtag,      PTS_AIRTAG,       "AirTag");
-    CHECK_DET(odidBle,     PTS_ODID_BLE,     "ODID-BLE");
-    CHECK_DET(odidWifi,    PTS_ODID_WIFI,    "ODID-WiFi");
-    CHECK_DET(smarttag,    PTS_SMARTTAG,     "SmartTag");
-    CHECK_DET(tile,        PTS_TILE,         "Tile");
+    // Trackers (AirTag / SmartTag / Tile) are gated on SUSTAINED presence rather
+    // than scoring per sighting — a passer-by's AirTag must not contribute toward
+    // an alert. See CHECK_TRACKER() and the follow gate in es_detect.h.
+    CHECK_TRACKER(airtag,   PTS_TRACKER_FOLLOW, "AirTag",   g_followAirTag);
+    CHECK_DET(odidBle,      PTS_ODID_BLE,       "ODID-BLE");
+    CHECK_DET(odidWifi,     PTS_ODID_WIFI,      "ODID-WiFi");
+    CHECK_TRACKER(smarttag, PTS_TRACKER_FOLLOW, "SmartTag", g_followSmartTag);
+    CHECK_TRACKER(tile,     PTS_TRACKER_FOLLOW, "Tile",     g_followTile);
     CHECK_DET(meshcore,    PTS_MESHCORE,     "MeshCore");
     CHECK_DET(ibeacon,     PTS_IBEACON,      "iBeacon");
     CHECK_DET(persist,     PTS_PERSIST,      "PersistTracker");

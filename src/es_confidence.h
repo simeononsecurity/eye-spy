@@ -40,6 +40,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include "es_detect.h"   // TrackerFollowState + the tracker follow gate
 
 // ── Timing / thresholds ──────────────────────────────────────────────────────
 #define SCORE_DECAY_INTERVAL  60000UL
@@ -60,12 +61,24 @@
 // own detector/tag instead of being logged as "Raven-BLE-UUID".
 #define PTS_FLOCK_GATT         5
 #define PTS_SKIMMER            5
-#define PTS_AIRTAG             4
+// ── BLE trackers (AirTag / SmartTag / Tile) ───────────────────────────────────
+// These do NOT score per sighting. A tracker only contributes to g_score once
+// its class has been *following* for TRACKER_FOLLOW_MS (~30 min) — see the
+// follow gate in es_detect.h for the reasoning (transient tracker sightings are
+// constant and benign; sustained presence is the privacy event) and for why the
+// gate is class-keyed rather than MAC-keyed (AirTags rotate their address every
+// ~15 min, so a MAC-keyed 30-minute window could never be satisfied by a real
+// follow).
+//
+// PTS_TRACKER_FOLLOW is deliberately SCORE_ALERT: once a tracker has verifiably
+// stayed with the user for half an hour, that alone is the alert. It replaces
+// the old per-sighting PTS_AIRTAG/PTS_SMARTTAG/PTS_TILE weights, which are gone
+// rather than left defined-but-unused so nothing can quietly re-add a
+// sighting-based tracker score.
+#define PTS_TRACKER_FOLLOW     6
 #define PTS_ODID_BLE           4
 #define PTS_ODID_WIFI          4
 #define PTS_SOUNDTHINKING      4   // SoundThinking/ShotSpotter co-deployed with Flock
-#define PTS_SMARTTAG           3
-#define PTS_TILE               3
 #define PTS_MESHCORE           2
 #define PTS_IBEACON            2
 #define PTS_PERSIST            2
@@ -110,6 +123,13 @@ DECL_DETECTOR(tile);
 DECL_DETECTOR(meshcore);
 DECL_DETECTOR(ibeacon);
 DECL_DETECTOR(persist);
+
+// Tracker follow windows — one per tracker CLASS, not per MAC address (see the
+// follow gate in es_detect.h). Updated from processBLE() in loop() context,
+// never from the BLE callback, which stays flag-only.
+static TrackerFollowState g_followAirTag;
+static TrackerFollowState g_followSmartTag;
+static TrackerFollowState g_followTile;
 
 // WiFi scored inline (not volatile — set/read only from loop(), never an ISR)
 static unsigned long g_flockOuiScored       = 0;
@@ -174,6 +194,51 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
             IF_M5BASIC_LOG(tag, (int)g_##name##Rssi, (unsigned)g_##name##Count); \
         } \
         addScore(pts, now, &g_##name##Scored, tag); \
+    }
+
+// Tracker engines (AirTag / SmartTag / Tile). Logging is identical to
+// CHECK_DET() — you still want to *see* that a tracker is around — but the score
+// is gated: nothing is awarded until the class has been following for
+// TRACKER_FOLLOW_MS (~30 min), so a tracker that merely passes by can no longer
+// push the device toward an ALERT. See the follow gate in es_detect.h.
+//
+// Two consequences worth being explicit about:
+//   * Not-yet-following trackers do not refresh g_stickySeen either, so they
+//     cannot hold an unrelated existing score up while it decays. A tracker that
+//     is merely in range must not influence alert state at all.
+//   * The follow is scored ONCE, on the transition. Re-awarding each window
+//     would let a tracker that simply sits on a desk ratchet g_score upward
+//     forever; g_stickySeen (refreshed on every sighting while following) is
+//     what keeps the alert alive for as long as it actually stays with you.
+#define CHECK_TRACKER(name, pts, tag, followState) \
+    if (g_##name##Det) { \
+        g_##name##Det = false; \
+        g_##name##Count++; \
+        bool          _following = trackerFollowUpdate(followState, now); \
+        unsigned long _mins      = trackerFollowMinutes(followState, now); \
+        bool          _isNewWindow = (followState.hits == 1); \
+        if (_isNewWindow) g_##name##Scored = 0;   /* a fresh follow must re-qualify */ \
+        bool _transition = _following && (g_##name##Scored == 0); \
+        if (_following) g_stickySeen = now; \
+        mbeDetTrack(tag, (int8_t)g_##name##Rssi); \
+        if (g_##name##Count == 1 || _transition || \
+            now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
+            g_##name##LoggedAt = now; \
+            Serial.printf("[eyespy] " tag "  RSSI=%d  #%u  %s (%lumin/%lumin)\n", \
+                          (int)g_##name##Rssi, (unsigned)g_##name##Count, \
+                          _following ? "FOLLOWING" : "watching", \
+                          _mins, TRACKER_FOLLOW_MS / 60000UL); \
+            if (_following) \
+                IF_M5BASIC_LOG(tag "-FOLLOW", (int)g_##name##Rssi, (unsigned)g_##name##Count); \
+            else \
+                IF_M5BASIC_LOG(tag, (int)g_##name##Rssi, (unsigned)g_##name##Count); \
+        } \
+        if (_transition) { \
+            g_##name##Scored = now; \
+            g_score += pts; \
+            Serial.printf("[eyespy] +%d (" tag " FOLLOWING %lumin)  score=%d\n", \
+                          pts, _mins, g_score); \
+        } \
     }
 
 // ── Score decay ──────────────────────────────────────────────────────────────

@@ -27,6 +27,9 @@
 //   Matching helpers: ouiMatch(), ssidHas(), strContainsCI(), ciEquals(),
 //     fwDefaultMacMatch(), bleNameShapeMatch(), ravenServiceInRange(),
 //     ravenService16FromUuidString(), ravenUuidInRange()
+//   Tracker follow-gate: TrackerFollowState, TRACKER_FOLLOW_MS,
+//     TRACKER_FOLLOW_MIN_HITS, TRACKER_CONTINUITY_MAX_GAP_MS,
+//     trackerFollowUpdate(), trackerFollowMinutes(), trackerFollowReset()
 
 #pragma once
 
@@ -405,4 +408,75 @@ static inline int ravenService16FromUuidString(const char* uuid) {
 static inline bool ravenUuidInRange(const char* uuid) {
     const int svc = ravenService16FromUuidString(uuid);
     return svc >= 0 && ravenServiceInRange((uint16_t)svc);
+}
+
+// ── BLE tracker "following" gate (AirTag / SmartTag / Tile) ───────────────────
+// WHY THIS EXISTS: trackers are the one BLE class where a single sighting means
+// nothing. AirTags, SmartTags and Tiles are carried by ordinary people, left in
+// bags, and shipped inside boxes — any passer-by, neighbour or delivery van can
+// put one in range for a few seconds. Letting that reach SCORE_ALERT makes the
+// detector cry wolf, which is worse than being quiet: a user who is warned every
+// time an AirTag goes past stops believing the alert that actually matters.
+//
+// The privacy event worth alerting on is *sustained* presence — a tracker that
+// stays with you. ~30 minutes is also the order of magnitude Apple and Samsung
+// use before warning a user about an unknown tracker travelling with them, so
+// the gate is aligned with what users already understand.
+//
+// DELIBERATELY KEYED ON THE TRACKER CLASS, NOT THE MAC ADDRESS. AirTags rotate
+// their Bluetooth address roughly every 15 minutes while separated from their
+// owner — the anti-tracking design that makes them hard to follow — so a genuine
+// 30-minute follow looks like two or three unrelated short sightings if you key
+// on the address, and the gate would never open for the exact case it exists to
+// catch. Tracking the class plus a continuity requirement survives rotation
+// while still resetting when the tracker actually leaves.
+//
+// The state machine is pure — the caller passes `now` — so the host test suite
+// can drive it through a simulated 30 minutes with no hardware and no waiting.
+//
+// Timestamps are uint32_t, not unsigned long, precisely so the millis() wrap
+// behaves identically everywhere: on the ESP32 `unsigned long` is 32-bit, but on
+// a 64-bit host (where the unit tests run) it is 64-bit, which would silently
+// make the ~49-day wrap untestable and could hide a wrap bug that only shows up
+// after a month of uptime on the real device.
+#define TRACKER_FOLLOW_MS             1800000UL  // 30 min of sustained presence
+#define TRACKER_FOLLOW_MIN_HITS             3    // one glimpse is not a follow
+#define TRACKER_CONTINUITY_MAX_GAP_MS 300000UL   // >5 min unseen = the follow broke
+
+struct TrackerFollowState {
+    uint32_t firstSeen;    // 0 = never seen (start of the current window)
+    uint32_t lastSeen;
+    uint16_t hits;         // sightings inside the current window
+    bool     following;    // duration + hits + continuity all satisfied
+};
+
+static inline void trackerFollowReset(TrackerFollowState& f) {
+    f.firstSeen = 0; f.lastSeen = 0; f.hits = 0; f.following = false;
+}
+
+// Record one sighting of this tracker class. Returns true once the class
+// qualifies as "following". Resets the window when the gap since the previous
+// sighting exceeds TRACKER_CONTINUITY_MAX_GAP_MS, so an unrelated tracker
+// appearing hours later cannot inherit the earlier window's elapsed time.
+static inline bool trackerFollowUpdate(TrackerFollowState& f, uint32_t now) {
+    // Unsigned subtraction, so this stays correct across the ~49-day millis()
+    // wrap: a wrap looks like a small elapsed value, not a huge negative one.
+    if (f.lastSeen != 0 && (uint32_t)(now - f.lastSeen) > TRACKER_CONTINUITY_MAX_GAP_MS) {
+        trackerFollowReset(f);
+    }
+    if (f.firstSeen == 0) f.firstSeen = now;
+    f.lastSeen = now;
+    if (f.hits < 0xFFFF) f.hits++;
+    if (!f.following && f.hits >= TRACKER_FOLLOW_MIN_HITS &&
+        (uint32_t)(now - f.firstSeen) >= TRACKER_FOLLOW_MS) {
+        f.following = true;
+    }
+    return f.following;
+}
+
+// Minutes this class has been continuously in range (0 when never seen).
+static inline uint32_t trackerFollowMinutes(const TrackerFollowState& f,
+                                            uint32_t now) {
+    if (f.firstSeen == 0) return 0;
+    return (uint32_t)(now - f.firstSeen) / 60000UL;
 }

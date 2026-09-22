@@ -71,7 +71,7 @@ architecture differs.
 
 ## Status
 
-Build-verified across every eye-spy environment, and unit-tested (52 host-side
-tests, including all-six-byte matching, name shapes, the range parser, and the
-standard-service exclusions), but **not yet observed against a live camera** —
-field coverage is unmeasured.
+Build-verified across every eye-spy environment, and unit-tested (67 host-side
+tests, including all-six-byte matching, name shapes, the range parser, the
+standard-service exclusions, and the 30-minute tracker following gate), but
+**not yet observed against a live camera** — field coverage is unmeasured.

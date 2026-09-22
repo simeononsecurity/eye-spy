@@ -154,6 +154,7 @@ BODY = """<div class="page">
       <li>Smart glasses, drones and Bluetooth trackers</li>
       <li>Card skimmers, and unknown devices that follow you</li>
     </ul>
+    <p>Trackers alert only after 30 minutes of following you.</p>
   </div>
 
   <div class="card">

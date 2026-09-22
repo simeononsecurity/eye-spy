@@ -40,13 +40,36 @@ Score decays −1 point every 60 seconds. Each detection type has a 120-second r
 | 4 | **Flock accessory GATT** (battery pack) | Advertised service UUID = Flock accessory service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` or Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | +5 🔴 |
 | 5 | **Raven surveillance device** | Advertised service UUID matches the named **vendor** Raven GATT services **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** — the range catches `0x3101`/`0x3102`, which expose GPS unauthenticated. Standard Bluetooth SIG services (`0x180A`/`0x1809`/`0x1819`) are deliberately **excluded** — they are on essentially every BLE device ever made | +5 🔴 |
 | 6 | **Card skimmer** (HC-03/05/06) | BLE device name exact match — Bluetooth modules commonly found in payment-terminal skimmers | +5 🔴 |
-| 7 | **Apple AirTag** | Manufacturer data `0x004C` subtype `0x12`/`0x1E`, or raw payload `1E FF 4C 00` / `4C 00 12` | +4 🔴 |
+| 7 | **Apple AirTag** | Manufacturer data `0x004C` subtype `0x12`/`0x1E`, or raw payload `1E FF 4C 00` / `4C 00 12`. **Only scores after ~30 minutes of continuous presence** — see the tracker gate below | +6 🔴 (once following) |
 | 8 | **Drone (OpenDroneID BLE)** | BLE service UUID `0xFFFA`, or raw AD service-data payload with app code `0x0D` | +4 🔴 |
-| 9 | **Samsung SmartTag** | BLE service UUID `0xFD5A` | +3 🟡 |
-| 10 | **Tile tracker** | BLE service UUID `0xFEED` or `0xFEEC` | +3 🟡 |
+| 9 | **Samsung SmartTag** | BLE service UUID `0xFD5A` — same 30-minute following gate as the AirTag | +6 🔴 (once following) |
+| 10 | **Tile tracker** | BLE service UUID `0xFEED` or `0xFEEC` — same 30-minute following gate as the AirTag | +6 🔴 (once following) |
 | 11 | **MeshCore node** | BLE device name prefix `MeshCore-` | +2 🟡 |
 | 12 | **iBeacon** (retail/venue tracking) | Manufacturer data `0x004C 0x02 0x15` — deployed in stores, airports, stadiums to track movement | +2 🟡 |
 | 13 | **Unknown persistent device** | Any unclassified BLE MAC seen ≥3× over ≥5 minutes (device scout / follower detection) | +2 🟡 |
+
+**Tracker gate (AirTag / SmartTag / Tile).** These three engines do **not** score
+on a sighting. A tracker must first be shown to be *following* — continuously in
+range for **~30 minutes** (`TRACKER_FOLLOW_MS`) — before it contributes anything
+to the score. Until then the sighting is still printed (`AirTag  RSSI=-71  #4
+watching (2min/30min)`) and shown on screen, but it adds **0 points**, so a
+passer-by's AirTag cannot push the device toward an ALERT.
+
+- **Why:** trackers are the one BLE class where a single sighting means nothing —
+  they are carried by ordinary people, left in bags, shipped inside boxes. An
+  alert every time one goes past trains the user to ignore the alert that matters.
+- **Continuity:** a gap longer than 5 minutes
+  (`TRACKER_CONTINUITY_MAX_GAP_MS`) ends the follow and restarts the clock, so
+  three unrelated trackers passing at 20-minute intervals never add up to a follow.
+- **Keyed on the tracker class, not the MAC address:** AirTags rotate their
+  Bluetooth address roughly every 15 minutes while separated from their owner, so
+  a 30-minute window keyed on the address could never be satisfied by a real
+  follow. Class + continuity survives that rotation.
+- **Scored once** when the follow is established, so a tracker merely sitting on a
+  desk cannot ratchet the score upward; the sticky-seen refresh keeps the alert up
+  while it genuinely stays with you.
+- 30 minutes is the order of magnitude Apple and Samsung use before warning a user
+  about an unknown tracker travelling with them.
 
 ### WiFi scan — active channel scan
 
@@ -204,12 +227,13 @@ project:
 
 ```bash
 cd eye-spy
-pio test -e native                              # run all 52 tests
+pio test -e native                              # run all 67 tests
 pio test -e native -f test_oui_matching          # OUI table + firmware-default MAC matching (20)
 pio test -e native -f test_ssid_ble_matching     # SSID / BLE-name / GATT / Raven-range matching (32)
+pio test -e native -f test_tracker_follow        # AirTag / SmartTag / Tile following gate (15)
 ```
 
-All **52 tests pass** against the current `es_detect.h`. The test suite covers:
+All **67 tests pass** against the current `es_detect.h`. The test suite covers:
 - All 35 `FLOCK_OUIS`, 8 `FLOCK_MFR_OUIS` (incl. `00:03:7f` and `14:b5:cd`), and 31 `CAM_OUIS` prefixes
 - SoundThinking and ALPR OUI isolation (not present in any other table)
 - Cross-table mutual-exclusion (no OUI prefix appears in more than one table)
@@ -231,6 +255,11 @@ All **52 tests pass** against the current `es_detect.h`. The test suite covers:
 - `FLOCK_SSID_KW` matching for the CVE-2025-59409 `test_flck` spelling
 - `FLOCK_BLE_MFR_IDS` / `flockBleMfrIdMatch()` (incl. rejection of the old
   incorrect `0x05A7`)
+- **Tracker "following" gate** — 29 minutes is not yet a follow, 30 is; a gap over
+  5 minutes restarts the clock; sightings scattered over hours never add up to a
+  follow; the ~49-day `millis()` wrap does not break the window; and `hits==1`
+  marks a new window (the contract `CHECK_TRACKER` relies on to re-arm its
+  once-per-follow score)
 - nullptr-termination sanity for every pattern array
 
 ---

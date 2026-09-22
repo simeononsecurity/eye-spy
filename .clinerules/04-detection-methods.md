@@ -29,10 +29,10 @@ tables in `es_detect.h`, scored via `CHECK_DET()` in `processBLE()`)
 | `ravenBle`     | Advertised service UUID matches one of `RAVEN_UUIDS[]` (5 **vendor-specific** services) **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** (see below) | `PTS_RAVEN_BLE` = 5 |
 | `flockGatt`    | Advertised service UUID matches `FLOCK_GATT_UUIDS[]` — Flock accessory `e8ccbb38-9532-46a8-9fe5-1814df172e6f` or Nordic legacy DFU `00001530-1212-efde-1523-785feabcd123` | `PTS_FLOCK_GATT` = 5 |
 | `skimmer`      | Device name exact-matches `SKIMMER_NAMES` (`HC-03`/`HC-05`/`HC-06`)        | `PTS_SKIMMER` = 5       |
-| `airtag`       | Mfr-data `0x004C` subtype `0x12`/`0x1E`, or raw payload fallback `1E FF 4C 00` / `4C 00 12` | `PTS_AIRTAG` = 4 |
+| `airtag`       | Mfr-data `0x004C` subtype `0x12`/`0x1E`, or raw payload fallback `1E FF 4C 00` / `4C 00 12` — **gated on the following window** | `PTS_TRACKER_FOLLOW` = 6, **only once following** |
 | `odidBle`      | Advertised service UUID `0xFFFA`, or raw AD payload matching OpenDroneID service-data pattern | `PTS_ODID_BLE` = 4 |
-| `smarttag`     | Advertised service UUID `0xFD5A` (Samsung SmartTag)                       | `PTS_SMARTTAG` = 3      |
-| `tile`         | Advertised service UUID `0xFEED` or `0xFEEC` (Tile tracker)               | `PTS_TILE` = 3          |
+| `smarttag`     | Advertised service UUID `0xFD5A` (Samsung SmartTag) — same gate as `airtag` | `PTS_TRACKER_FOLLOW` = 6, **only once following** |
+| `tile`         | Advertised service UUID `0xFEED` or `0xFEEC` (Tile tracker) — same gate as `airtag` | `PTS_TRACKER_FOLLOW` = 6, **only once following** |
 | `meshcore`     | Device name prefix `MeshCore-`                                           | `PTS_MESHCORE` = 2      |
 | `ibeacon`      | Mfr-data `0x004C` type `0x02` len `0x15` (generic iBeacon — retail/venue tracking) | `PTS_IBEACON` = 2 |
 | `persist`      | Same unclassified MAC seen ≥`PERSIST_MIN_COUNT` (3) times over ≥`PERSIST_MIN_MS` (5 min) | `PTS_PERSIST` = 2 |
@@ -41,7 +41,59 @@ BLE detections are **always standalone** — eye-spy has never had
 flock-you-esp32's historical "BLE-only alert invisible" bug: `CHECK_DET()`
 calls `addScore()` unconditionally for every detector flag, with no
 requirement of a corroborating WiFi hit. Confirmed by direct code reading
-(`es_confidence.h`).
+(`es_confidence.h`). **The three trackers are the deliberate exception** — see
+the next section.
+
+### Tracker "following" gate (`airtag` / `smarttag` / `tile`)
+
+These three engines use `CHECK_TRACKER()` rather than `CHECK_DET()`, and score
+`PTS_TRACKER_FOLLOW` (6 = `SCORE_ALERT`) **only once the tracker has been
+following for `TRACKER_FOLLOW_MS` (30 minutes)**. Before that, sightings are still
+logged and shown as `watching (Nmin/30min)` but add **nothing** to `g_score`.
+
+Why: trackers are the one BLE class where a single sighting carries no
+information. They are carried by ordinary people, left in bags, and shipped
+inside boxes, so alerting every time one goes past trains the user to ignore the
+alert that actually matters. Sustained presence is the privacy event, and 30
+minutes is the order of magnitude Apple and Samsung use before warning a user
+about an unknown tracker travelling with them.
+
+Design points that are easy to get wrong later:
+
+- **Class-keyed, not MAC-keyed.** AirTags rotate their Bluetooth address roughly
+  every 15 minutes while separated from their owner, so a 30-minute window keyed
+  on the address could never be satisfied by a genuine follow — the exact case the
+  gate exists to catch. There is one `TrackerFollowState` per tracker *class*.
+- **Continuity window** (`TRACKER_CONTINUITY_MAX_GAP_MS` = 5 min): a longer gap
+  resets the window, so unrelated trackers passing at 20-minute intervals can
+  never accumulate into a follow. `test_scattered_sightings_never_follow` is the
+  regression test for precisely that.
+- **Scored once per follow, not once per window.** Re-awarding would let a tracker
+  sitting on a desk ratchet `g_score` upward forever; `g_stickySeen` (refreshed on
+  each sighting *while following*) is what keeps the alert alive instead. A
+  non-following tracker does not refresh `g_stickySeen` either, so it cannot hold
+  an unrelated existing score up while it decays.
+- **Re-arms when the tracker leaves.** `trackerFollowUpdate()` sets `hits` back to
+  1 on a new window, and `CHECK_TRACKER()` reads `hits == 1` as "clear the scored
+  flag", so a tracker that leaves and genuinely follows again later alerts again.
+  `test_hits_equals_one_marks_a_new_window` pins that cross-file contract.
+- **`uint32_t` timestamps, not `unsigned long`.** On the ESP32 they are the same
+  width, but on a 64-bit host `unsigned long` is 64-bit, which would silently make
+  the ~49-day `millis()` wrap untestable — a wrap bug would then only appear after
+  a month of uptime on the real device.
+  `test_millis_wrap_does_not_break_the_window` covers it.
+- `TRACKER_FOLLOW_MIN_HITS` (3) can never be the binding constraint: holding
+  continuity for 30 minutes already requires ≥7 sightings. It is defence in depth,
+  pinned by `test_min_hits_is_not_the_binding_constraint` so a future tweak cannot
+  make it dead or contradictory.
+
+The state machine lives in `es_detect.h` — pure, Serial-free, and taking `now` as
+a parameter, so the entire 30-minute window is unit-testable in milliseconds. The
+scoring and `CHECK_TRACKER()` wiring live in `es_confidence.h`.
+
+The old per-sighting weights (`PTS_AIRTAG` = 4, `PTS_SMARTTAG` = 3,
+`PTS_TILE` = 3) were **removed rather than left defined-but-unused**, so nothing
+can quietly reintroduce a sighting-based tracker score.
 
 ### Firmware-derived BLE additions (Flock camera firmware dump, 2026-09-16)
 
