@@ -13,6 +13,10 @@ Continuously monitors Bluetooth LE and WiFi for recording devices, surveillance 
 [4x6 pocket card](docs/print/quick-start-4x6.pdf) &middot;
 [8.5x11 sheet](docs/print/quick-start-letter.pdf)
 
+**Support:** [customer replies](docs/customer-replies.md) — ready-made answers to
+the questions that come back most often (sound, buzz patterns, what the event
+counter means, how to identify a detected device).
+
 ---
 
 ## LED Indicators
