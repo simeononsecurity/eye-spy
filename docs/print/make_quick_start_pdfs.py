@@ -185,7 +185,7 @@ BODY = """<div class="page">
     </table>
   </div>
 
-  <div class="foot">Eye Spy is silent &mdash; no buzzer. Turn over for how to use it &rarr;</div>
+  <div class="foot">Two beeps = worse, one = notice. Code shown on screen &rarr;</div>
 </div>
 
 <div class="page last">

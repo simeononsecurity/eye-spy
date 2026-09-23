@@ -213,14 +213,95 @@ callback: `g_pScan->start((uint32_t)BLE_SCAN_DURATION_S, (void
 (*)(NimBLEScanResults))nullptr, false)`. See `01-clean-code.md` for the
 full root-cause writeup.
 
+## Alert presentation (chime, screen, hold)
+
+Three output channels, deliberately kept in step so severity is readable by
+ear, by eye, or by feel. **Any change to one of the three should be checked
+against the other two** — they exist to express the same three levels.
+
+| Severity | Audio (`audioAlert()` in `main.cpp`) | Screen | Core2 vibration |
+|---|---|---|---|
+| ALERT (≥ `SCORE_ALERT` 6) | rising 2-tone, G6 1568 Hz → C7 2093 Hz | red header, `MAC <addr>` | 2 pulses (500 ms, 150 ms gap) |
+| CAUTION (≥ `SCORE_CAUTION` 3) | single tone, A5 880 Hz | amber header, `MAC <addr>` | 1 pulse (400 ms) |
+| CLEAR | silent | green header | — |
+
+- **Audio is per-board hardware, and one board has none.** `USE_M5_SPEAKER` is
+  on for Atom Voice / M5Stack Basic / Core2 For AWS, `USE_BUZZER` for Atom
+  Echo (G25) and StickC Plus SE (G2), and **neither** for Atom Lite,
+  `esp32dev` or the T-Dongle C5. `audioAlert()` therefore compiles to a no-op
+  on those — which is fine, but it means "no sound" is never by itself
+  evidence of a fault, and **a guide or README must not promise sound on a
+  board that cannot make any**. This exact mistake shipped once: three
+  customers reported "the alert is only the vibration" because the
+  M5Stack Basic/Core2 block had `USE_M5_SPEAKER 0`, and the printable guide
+  flatly stated "Eye Spy is silent — no buzzer".
+- **The chime must never `delay()`.** It is armed by `audioAlert()` and stepped
+  by `audioAlertTick()` from the UI task, which is also what redraws the
+  display. Blocking that task for the ~350 ms the chime needs is the same
+  "frozen screen" failure mode the vibration tick and the display-flicker fix
+  each had to remove — hence the arm/tick split and the shared
+  `g_uiMux`-protected snapshot.
+- **Severity is latched on the rising edge.** `ui_task.h` calls
+  `audioAlert(level >= 2)` only when the level *crosses* upward, so a device
+  that sits at ALERT does not re-chime every tick.
+
+### Source MAC on screen
+
+The address of the device that triggered a detection is shown directly beneath
+the detection type, in the solid severity colour (`mbe_lastMac` / `msce_lastMac`
+/ the `mac` parameter of `c5DisplayScore()`). It is threaded through
+`UiSnapshot.lastMac` under the same critical section as `lastDet` **so the two
+can never disagree on screen** — a stale address under a fresh label would
+misidentify an innocent device.
+
+- It is captured by `esNotePendingMac6()` / `esNotePendingMacStr()` at the
+  moment an engine matches, and latched into `g_lastDetMac` by `mbeDetTrack()`
+  alongside the label. **Latch both or neither.**
+- A trigger with no address (an SSID-keyword match — the broadcaster's
+  identifier *is* the SSID) renders as `MAC --`, never as the previous
+  detection's address.
+- **Boards differ in width, so the drawing differs but the content does not:**
+  Core2/Basic and StickC are ≥240 px wide and print the full 17-character
+  address on one line; the T-Dongle C5 is 80 px wide and splits it at the
+  colon boundary (`aa:bb:cc` / `dd:ee:ff`).
+
+### Critical-alert screen hold (`src/alert_hold.h`)
+
+A `SCORE_ALERT` detection pins the panel for `EA_HOLD_MS` (15 s) so the severity
+and the source address stay readable after the score has already decayed —
+otherwise both are replaced before they can be read or written down.
+
+- The **decision logic is shared** in `alert_hold.h`; each display header only
+  draws. Do not copy the state machine into a fourth display header — three
+  copies of a timer is exactly the drift this repo has been bitten by.
+- **Nothing on the held panel blinks**, and the countdown is refreshed once per
+  whole second (`ALERT_HOLD_TICK`) rather than redrawing the panel every tick —
+  a repaint several times a second makes the address unreadable.
+- A held alert re-arms on a **changed source** (address *or* detection label),
+  so a second critical device gets its own full window.
+- **Cautions never hold.** They are common; pinning the screen for each would
+  make the device unusable.
+- A source that is *still* critical when a hold expires does **not** re-hold:
+  the live panel already shows the same severity and address, and re-holding
+  every tick would freeze the screen indefinitely.
+
 ## Test tooling that exercises these paths
 
-- `test/test_oui_matching/` and `test/test_ssid_ble_matching/` (native/host
-  Unity tests, 32 test cases total) — exercise `es_detect.h`'s pure
-  matching helpers (`ouiMatch()`, `ssidHas()`, `strContainsCI()`) and
-  pattern-table integrity (counts, mutual exclusivity, null-termination)
-  directly on the host, no hardware required. Run via `pio test -e native`
-  or the platformio-mcp `run_tests` tool.
+- `test/test_oui_matching/`, `test/test_ssid_ble_matching/`,
+  `test/test_tracker_follow/` and `test/test_alert_hold/` (native/host Unity
+  tests, **82 test cases total**) — exercise `es_detect.h`'s pure matching
+  helpers (`ouiMatch()`, `ssidHas()`, `strContainsCI()`, `fwDefaultMacMatch()`,
+  `ravenServiceInRange()`, `trackerFollowUpdate()`), pattern-table integrity
+  (counts, mutual exclusivity, null-termination) and `alert_hold.h`'s hold
+  state machine. All run directly on the host via `pio test -e native` or the
+  platformio-mcp `run_tests` tool — no hardware required.
+  **The tracker-follow and alert-hold suites are only possible because both
+  state machines take `now` as a parameter**: that is what lets a 30-minute
+  follow window and a 15-second screen hold be driven through their entire
+  lifecycle in microseconds, deterministically. Keep that property when
+  editing either one; calling `millis()` inside the state machine would make
+  the interesting edges (threshold crossing, expiry, re-arm, wrap) untestable
+  and would force those tests back onto hardware.
 - `src/es_beacon_test.cpp` (`[env:atom-lite-beacon]` PlatformIO
   environment, standalone `.cpp` entry point selected via
   `build_src_filter`, same pattern as flock-you-esp32's `beacon_test.cpp`)

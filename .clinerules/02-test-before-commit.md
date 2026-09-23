@@ -102,6 +102,41 @@ this workflow before considering any firmware change complete.
    status / decay / `WiFi done` / boot lines may legitimately return
    `None`). Re-run that check whenever the log format changes.
 
+11. **`[env:lilygo-t-dongle-c5]` cannot be built in this repo at all — verify
+   `src/c5_display.h` changes another way.** The env pins `espressif32@6.7.0`,
+   whose Arduino core (2.0.16) ships **no** `platformio-build-esp32c5.py`, so
+   the build dies in well under a second with
+   `*** missing SConscript file '…/platformio-build-esp32c5.py'` and compiles
+   **zero** files. That is structural, not transient — it does not fix itself
+   on retry, and it means any edit to `c5_display.h` would otherwise ship
+   completely unverified (contrast flock-you-esp32, whose C5 envs use the
+   `pioarduino/platform-espressif32` fork and do build). Until this repo
+   migrates that env, typecheck the header on the host against stub Adafruit
+   headers:
+
+   ```sh
+   mkdir -p /tmp/c5stub && cd /tmp/c5stub   # write Adafruit_GFX.h,
+   # Adafruit_ST7735.h, Adafruit_NeoPixel.h, Arduino.h stubs
+   cat > t.cpp <<'EOF'
+   #include "Arduino.h"
+   #define USE_C5_DISPLAY 1
+   #include "c5_display.h"
+   int main(){ /* call EVERY function in the header, both branches */ }
+   EOF
+   g++ -std=gnu++17 -Wall -Wextra -Wno-unused-parameter \
+       -I/tmp/c5stub -I<repo>/src -fsyntax-only t.cpp
+   ```
+
+   Call every public function in the header (including default-argument and
+   null-pointer paths) or `-Wall` will report them as unused and you will not
+   actually be typechecking them. This caught nothing in the change that
+   introduced it, but it is the only verification available for that board —
+   do not skip it on the grounds that "the C5 is experimental".
+
+   **Do not** report the C5 env's failure as a regression introduced by a
+   change: check whether any file was compiled (`grep -c Compiling <log>`
+   returns 0) before attributing a break to source.
+
 ## Before committing
 
 - Re-run `git status`/`git diff --stat` and confirm every changed file is

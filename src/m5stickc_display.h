@@ -23,6 +23,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cmath>
+#include "alert_hold.h"   // shared critical-alert hold state machine
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
 static constexpr uint16_t MSCE_BLACK    = 0x0000;
@@ -49,6 +50,7 @@ static constexpr int MSCE_BTN_H = 17;
 static uint8_t msce_brightness  = 128;
 static int     msce_lastScore   = -999;
 static char    msce_lastDet[32] = {0};
+static char    msce_lastMac[18] = {0};   // source address of that detection
 static int8_t  msce_lastRssi    = -100;
 static char    msce_lastPhase[12]={0};
 static bool    msce_needsRedraw = true;
@@ -228,12 +230,87 @@ static void m5stickcInit() {
 
 // ── Main display update ───────────────────────────────────────────────────────
 // Call from updateLED().
-static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
-                            const char* phase, unsigned long lastAlertMs,
-                            int trackedCount, uint32_t totalEvents) {
-    int lvl = msce_level(score);
+static AlertHoldState msce_hold;
+static bool           msce_holdInited = false;
 
-    // See m5basic_display.h's m5basicUpdate() for the full root-cause
+// ── Frozen CRITICAL panel ─────────────────────────────────────────────────────
+// Mirror of m5basic_display.h's mbe_drawFrozenAlert() (same content, this board's
+// palette/geometry): severity + detection type + SOURCE ADDRESS, all solid, held
+// while alert_hold.h says so. The panel is 240 px wide, so the 17-character
+// address fits on one line at text size 2 (204 px).
+static void msce_drawHeldAlert(const char* det, const char* mac, int8_t rssi,
+                               unsigned long secondsLeft, bool full) {
+    if (!full) {
+        M5.Display.setTextSize(1);
+        M5.Display.setTextColor(MSCE_GREY, MSCE_BLACK);
+        M5.Display.setCursor(3, 100);
+        M5.Display.printf("held %2lus - readable      ", (unsigned long)secondsLeft);
+        return;
+    }
+
+    msce_header("!! CRITICAL !!", msce_levelLabel(2), MSCE_DARK_RED, MSCE_WHITE);
+    M5.Display.fillRect(0, MSCE_HDR_H, MSCE_W, MSCE_BTN_Y - MSCE_HDR_H, MSCE_BLACK);
+
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
+    M5.Display.setCursor(3, 20); M5.Display.print("DETECTION");
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MSCE_RED, MSCE_BLACK);
+    M5.Display.setCursor(3, 30);
+    {
+        char d25[26]; strncpy(d25, (det && det[0]) ? det : "?", 25); d25[25] = '\0';
+        M5.Display.print(d25);
+    }
+
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
+    M5.Display.setCursor(3, 52); M5.Display.print("SOURCE MAC");
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MSCE_RED, MSCE_BLACK);
+    M5.Display.setCursor(3, 62);
+    M5.Display.print((mac && mac[0]) ? mac : "-- no address --");
+
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
+    M5.Display.setCursor(3, 84); M5.Display.printf("RSSI %d dBm", (int)rssi);
+
+    M5.Display.setTextColor(MSCE_GREY, MSCE_BLACK);
+    M5.Display.setCursor(3, 100);
+    M5.Display.printf("held %2lus - readable      ", (unsigned long)secondsLeft);
+
+    msce_btnBar("RESET", "SCAN");
+}
+
+static void m5stickcUpdate(int score, const char* lastDet, const char* lastMac,
+                            int8_t lastRssi, const char* phase,
+                            unsigned long lastAlertMs, int trackedCount,
+                            uint32_t totalEvents) {
+    int lvl = msce_level(score);
+    const char* macNow = (lastMac && lastMac[0]) ? lastMac : "";
+
+    // ── Critical-alert HOLD ──────────────────────────────────────────────────
+    // Decision logic is shared (alert_hold.h); this only renders what it asks
+    // for. Checked BEFORE the stale/dataChanged early-returns below so a hold
+    // cannot be skipped by the idle-tick path.
+    unsigned long nowMsHold = millis();
+    if (!msce_holdInited) { alertHoldInit(&msce_hold); msce_holdInited = true; }
+    unsigned long   holdSecLeft = 0;
+    AlertHoldAction holdAct = alertHoldStep(&msce_hold, lvl, lastDet, macNow,
+                                            lastRssi, nowMsHold, &holdSecLeft);
+    if (holdAct == ALERT_HOLD_DRAW || holdAct == ALERT_HOLD_TICK ||
+        holdAct == ALERT_HOLD_ACTIVE) {
+        if (holdAct == ALERT_HOLD_DRAW)
+            msce_drawHeldAlert(msce_hold.det, msce_hold.mac, msce_hold.rssi,
+                               holdSecLeft, /*full=*/true);
+        else if (holdAct == ALERT_HOLD_TICK)
+            msce_drawHeldAlert(msce_hold.det, msce_hold.mac, msce_hold.rssi,
+                               holdSecLeft, /*full=*/false);
+        msce_lastDrawMs  = nowMsHold;
+        msce_needsRedraw = true;
+        return;
+    }
+    if (holdAct == ALERT_HOLD_RELEASED) msce_needsRedraw = true;  // repaint live
+
     // explanation: this function used to treat the ~250ms "stale" timer
     // tick as equivalent to a genuine data change, causing the ENTIRE
     // content area to fillRect(BLACK)+redraw roughly 4x/second
@@ -267,6 +344,8 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
     int msce_prevScoreForBlink = msce_lastScore;
     msce_lastScore = score;
     if (lastDet) { strncpy(msce_lastDet,   lastDet, 31); msce_lastDet[31]   = '\0'; }
+    if (lastMac) { strncpy(msce_lastMac,   lastMac, 17); msce_lastMac[17]   = '\0'; }
+    else           msce_lastMac[0] = '\0';
     if (phase)   { strncpy(msce_lastPhase, phase,   11); msce_lastPhase[11] = '\0'; }
     msce_lastRssi = lastRssi;
     msce_needsRedraw = false;
@@ -309,6 +388,15 @@ static void m5stickcUpdate(int score, const char* lastDet, int8_t lastRssi,
         M5.Display.setCursor(3, y);
         char det[26]; strncpy(det, msce_lastDet, 25); det[25]='\0';
         M5.Display.print(det); y += 11;
+        // Source address directly under the detection type, in the solid
+        // severity colour (see m5basic_display.h for the rationale). "--" means
+        // the trigger carried no address (e.g. an SSID-only match) — kept
+        // distinct from a stale address belonging to a previous device.
+        M5.Display.setTextColor(msce_levelFg(lvl), MSCE_BLACK);
+        M5.Display.setCursor(3, y);
+        if (msce_lastMac[0]) { M5.Display.setTextSize(1); M5.Display.printf("MAC %s", msce_lastMac); }
+        else                 { M5.Display.print("MAC --"); }
+        y += 11;
         // Signal bars + trend arrow
         msce_rPush(lastRssi);
         msce_drawSig(3, y, lastRssi);

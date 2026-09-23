@@ -106,6 +106,54 @@ A single hit from a definite device (Axon, Flock, ALPR OUI, AirTag) immediately 
 
 ---
 
+## What the Device Tells You
+
+Every board signals the same three-level severity through whichever outputs it physically has:
+
+| Board | Audio | Visual | Haptic |
+|---|---|---|---|
+| Atom Lite | — (no speaker/buzzer) | NeoPixel LED | — |
+| Atom Echo | passive buzzer (G25) | — | — |
+| Atom Voice | I2S speaker | LED | — |
+| **Core2 For AWS** | **I2S speaker (1 W)** | screen | **vibration motor** |
+| M5Stack Basic | I2S speaker (1 W) | screen | — (no motor) |
+| StickC Plus SE | passive buzzer (G2) | screen | — |
+| T-Dongle C5 | — | screen + RGB LED | — |
+
+**Note the first row:** the Atom Lite — the cheapest, most common build — has no audio hardware at all, so it can only ever light its LED. If you are waiting for a beep from an Atom Lite, you will wait forever; that is the hardware, not a fault.
+
+### Audio: a two-tone chime, not a blip
+
+- **Alert (score 6+)** — a rising two-tone chime, **G6 (1568 Hz) → C7 (2093 Hz)**, 130 ms then 240 ms with a 70 ms gap. The rising interval is what reads as "attention".
+- **Caution (score 3–5)** — a **single lower tone, A5 (880 Hz)**, 130 ms.
+
+This deliberately mirrors the vibration patterns (**2 pulses = alert, 1 pulse = caution**) so severity can be judged by ear, by feel, or by eye. The chime is **non-blocking**: it is armed by the detector and stepped by the UI task between redraws, so a chime never freezes the screen or delays a detection.
+
+### Screen: detection type **and the source MAC**
+
+Boards with a display show, top to bottom:
+
+1. **Severity** — `CLEAR` / `CAUTION` / `ALERT`, header colour matching the LED.
+2. **The detection type** — e.g. `Flock-cam-OUI`, `AirTag`, `ALPR-OUI`.
+3. **The source MAC address** — directly beneath the type, in the solid severity colour.
+
+The address is the actionable part: it identifies *which* device caused the alert, so it can be written down, reported, or cross-referenced against your own records.
+
+- `MAC --` means the trigger carried **no** address — an SSID-only match, where the identifier is the SSID itself.
+- It is shown as `--` rather than reusing the previous detection's address on purpose: a stale address would misidentify an innocent device, which is precisely the confusion this line exists to remove.
+- On the **T-Dongle C5** the screen is only 80 px wide, so the address wraps across two lines (`aa:bb:cc` / `dd:ee:ff`).
+
+### Critical alerts hold the screen for 15 seconds
+
+A critical detection is usually momentary. On a live dashboard it would be replaced — severity *and* address together — before either could be read. So when severity reaches **ALERT** the panel is held for **15 seconds** (`EA_HOLD_MS`), showing severity, detection type and source MAC, with a countdown so it is obvious the device is still running rather than hung.
+
+- **Nothing on the held panel blinks.** The LED is the blinking element; a flashing address cannot be copied down.
+- A **second** critical device arriving during a hold gets its own full 15-second window, instead of inheriting a nearly-expired one.
+- **Cautions never hold.** They are common, and pinning the screen for each would make the device unusable.
+- When the hold expires the live dashboard returns. If the same threat is still present the live panel already shows the same severity and address, so nothing is lost.
+
+---
+
 ## Phase Schedule
 
 ```

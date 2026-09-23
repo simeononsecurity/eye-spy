@@ -30,6 +30,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cmath>
+#include "alert_hold.h"   // shared critical-alert hold state machine
 
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
@@ -69,6 +70,18 @@ static char    mbe_lastDet[32]  = {0};
 static int8_t  mbe_lastRssi     = -100;
 static char    mbe_lastPhase[12]= {0};
 static bool    mbe_needsRedraw  = true;
+
+// ── Critical-alert FREEZE (severity + source readability) ─────────────────────
+// A CRITICAL hit locks the screen on the alert panel for this long. Rationale
+// (the request that drove it): "users need to be able to identify the level of
+// severity ... and possibly identify the source of the device themselves" — the
+// dashboard below repaints about twice a second AND on every channel hop, so an
+// address printed on it is wiped before anyone can read it or write it down.
+// 15000 matches the alert-hold used elsewhere (UI_ALERT_HOLD_MS in ui_task.h and
+// the previous MB_ALERT_HOLD_MS here), comfortably above the 10 s minimum asked
+// for.
+static AlertHoldState mbe_hold;
+static bool           mbe_holdInited = false;
 // Alternate display mode toggled by Btn B (brightness cycle skipped — see below)
 // mbe_altMode: 0 = main view, 1 = detection history placeholder
 static uint8_t mbe_altMode      = 0;
@@ -429,10 +442,112 @@ static void m5basicInit() {
 //   lastAlertMs   — millis() elapsed since g_stickySeen (0 if no detection yet)
 //   trackedCount  — number of tracked unknown BLE devices
 //   totalEvents   — total detection engine fire count since boot
-static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
-                           const char* phase, unsigned long lastAlertMs,
-                           int trackedCount, uint32_t totalEvents) {
+// ── Frozen CRITICAL panel ─────────────────────────────────────────────────────
+// Replaces the live dashboard while a critical alert is held on screen (see
+// EA_HOLD_MS in alert_hold.h). It shows the three things a user has to act on —
+// and, if they want to report or investigate, the one thing they need to write
+// down:
+//   1. how bad it is      (severity label, solid red)
+//   2. what kind of thing (the detection type, e.g. "Flock-cam-OUI")
+//   3. WHICH device       (the source address, large and solid)
+// Nothing in this panel blinks, and the countdown is the only element that
+// changes: the whole point is a stable, readable target. On boards that have a
+// status LED, that LED is the blinking element; a flashing address is unreadable.
+static constexpr int MBE_FREEZE_CD_Y = MBE_HDR_H + 10 + 26 + 26 + 16;
+
+// full=true redraws the whole panel; full=false refreshes only the countdown
+// line, so the 1 Hz countdown does not repaint (and therefore flicker) the
+// content the user is trying to read.
+static void mbe_drawFrozenAlert(const char* det, const char* mac, int8_t rssi,
+                                const char* phase, unsigned long secondsLeft,
+                                bool full) {
+    if (!full) {
+        M5.Display.setTextSize(1);
+        M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
+        M5.Display.setCursor(8, MBE_FREEZE_CD_Y);
+        M5.Display.printf("Screen held %2lus more so the source stays readable   ",
+                          (unsigned long)secondsLeft);
+        return;
+    }
+
+    mbe_header("!! CRITICAL !!", mbe_levelLabel(2), MBE_DARK_RED, MBE_WHITE);
+    M5.Display.fillRect(0, MBE_HDR_H, MBE_W, MBE_BTN_Y - MBE_HDR_H, MBE_BLACK);
+
+    int y = MBE_HDR_H + 10;
+
+    // 1/2. Severity + detection type
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
+    M5.Display.setCursor(8, y);
+    M5.Display.print("DETECTION");
+    y += 12;
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MBE_RED, MBE_BLACK);
+    M5.Display.setCursor(8, y);
+    {
+        char det25[26]; strncpy(det25, det ? det : "?", 25); det25[25] = '\0';
+        M5.Display.print(det25);
+    }
+    y += 26;
+
+    // 3. SOURCE ADDRESS — directly under the detection type, as requested, in the
+    //    severity colour and solid so it can be read at arm's length.
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
+    M5.Display.setCursor(8, y);
+    M5.Display.print("SOURCE MAC");
+    y += 12;
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MBE_RED, MBE_BLACK);
+    M5.Display.setCursor(8, y);
+    M5.Display.printf("%s", (mac && mac[0]) ? mac : "-- no address --");
+    y += 24;
+
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MBE_LT_GREY, MBE_BLACK);
+    M5.Display.setCursor(8, y);
+    M5.Display.printf("RSSI %d dBm    phase %s", (int)rssi, phase ? phase : "?");
+
+    M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
+    M5.Display.setCursor(8, MBE_FREEZE_CD_Y);
+    M5.Display.printf("Screen held %2lus more so the source stays readable   ",
+                      (unsigned long)secondsLeft);
+
+    mbe_btnBar("RESET", "BRIGHT", "SCAN");
+}
+
+static void m5basicUpdate(int score, const char* lastDet, const char* lastMac,
+                           int8_t lastRssi, const char* phase,
+                           unsigned long lastAlertMs, int trackedCount,
+                           uint32_t totalEvents) {
     int lvl = mbe_level(score);
+    const char* macNow = (lastMac && lastMac[0]) ? lastMac : "";
+    const char* detNow = lastDet ? lastDet : "";
+    unsigned long nowMs = millis();
+
+    // ── Critical-alert HOLD ──────────────────────────────────────────────────
+    // The decision logic lives in alert_hold.h (shared with the other display
+    // boards); this function only renders what it asks for.
+    if (!mbe_holdInited) { alertHoldInit(&mbe_hold); mbe_holdInited = true; }
+    unsigned long    holdSecLeft = 0;
+    AlertHoldAction  holdAct = alertHoldStep(&mbe_hold, lvl, detNow, macNow,
+                                             lastRssi, nowMs, &holdSecLeft);
+
+    if (holdAct == ALERT_HOLD_DRAW || holdAct == ALERT_HOLD_TICK ||
+        holdAct == ALERT_HOLD_ACTIVE) {
+        if (holdAct == ALERT_HOLD_DRAW)
+            mbe_drawFrozenAlert(mbe_hold.det, mbe_hold.mac, lastRssi, phase,
+                                holdSecLeft, /*full=*/true);
+        else if (holdAct == ALERT_HOLD_TICK)
+            mbe_drawFrozenAlert(mbe_hold.det, mbe_hold.mac, lastRssi, phase,
+                                holdSecLeft, /*full=*/false);
+        // Keep the stale-tick clock in step while held, and leave needsRedraw set
+        // so the live dashboard repaints the moment the hold lifts.
+        mbe_lastDrawMs  = nowMs;
+        mbe_needsRedraw = true;
+        return;
+    }
+    if (holdAct == ALERT_HOLD_RELEASED) mbe_needsRedraw = true;  // full repaint now
 
     // WHY THIS SPLIT EXISTS: this function used to treat the ~250ms "stale"
     // timer tick (added so "Last alert: X ago" visibly counts up) as
@@ -522,6 +637,18 @@ static void m5basicUpdate(int score, const char* lastDet, int8_t lastRssi,
         char det[26]; strncpy(det, mbe_lastDet, 25); det[25] = '\0';
         M5.Display.print(det);
         y += 20;
+
+        // SOURCE ADDRESS — directly under the detection type, as requested. Drawn
+        // in the solid severity colour (red = alert, amber = caution, green =
+        // clear) so "how bad" and "which device" read together, and solid rather
+        // than blinking because a flashing address cannot be copied down. Shows
+        // "--" when the trigger carried no address (an SSID-only match), which is
+        // deliberately distinct from a stale address belonging to another device.
+        M5.Display.setTextSize(1);
+        M5.Display.setTextColor(mbe_levelFg(mbe_level(score)), MBE_BLACK);
+        M5.Display.setCursor(8, y);
+        M5.Display.printf("MAC %s", macNow[0] ? macNow : "--");
+        y += 12;
 
         // Signal strength bars + trend arrow
         mbe_rPush(lastRssi);

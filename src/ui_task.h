@@ -68,6 +68,7 @@
 struct UiSnapshot {
     int           score;
     char          lastDet[32];
+    char          lastMac[18];   // source address of that detection, "" if none
     int8_t        lastRssi;
     char          phase[12];
     unsigned long lastAlertMs;
@@ -75,7 +76,7 @@ struct UiSnapshot {
     uint32_t      totalEvents;
 };
 
-static UiSnapshot   g_uiSnap = { 0, {0}, -100, {0}, 0, 0, 0 };
+static UiSnapshot   g_uiSnap = { 0, {0}, {0}, -100, {0}, 0, 0, 0 };
 static portMUX_TYPE  g_uiMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Button action reported by the UI task, consumed once by loop().
@@ -85,14 +86,20 @@ static portMUX_TYPE     g_uiBtnMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Called from the scanning side (updateLED(), every loop() iteration).
 // Cheap: just a bounded strncpy/memcpy under a short critical section.
-static void uiPublish(int score, const char* lastDet, int8_t lastRssi,
-                       const char* phase, unsigned long lastAlertMs,
-                       int trackedCount, uint32_t totalEvents) {
+static void uiPublish(int score, const char* lastDet, const char* lastMac,
+                       int8_t lastRssi, const char* phase,
+                       unsigned long lastAlertMs, int trackedCount,
+                       uint32_t totalEvents) {
     portENTER_CRITICAL(&g_uiMux);
     g_uiSnap.score = score;
     if (lastDet) { strncpy(g_uiSnap.lastDet, lastDet, sizeof(g_uiSnap.lastDet) - 1);
                    g_uiSnap.lastDet[sizeof(g_uiSnap.lastDet) - 1] = '\0'; }
     else           g_uiSnap.lastDet[0] = '\0';
+    // Source address of that detection — copied with the label so the two can
+    // never disagree on screen (see the pending-MAC note in main.cpp).
+    if (lastMac) { strncpy(g_uiSnap.lastMac, lastMac, sizeof(g_uiSnap.lastMac) - 1);
+                   g_uiSnap.lastMac[sizeof(g_uiSnap.lastMac) - 1] = '\0'; }
+    else           g_uiSnap.lastMac[0] = '\0';
     g_uiSnap.lastRssi = lastRssi;
     if (phase)    { strncpy(g_uiSnap.phase, phase, sizeof(g_uiSnap.phase) - 1);
                     g_uiSnap.phase[sizeof(g_uiSnap.phase) - 1] = '\0'; }
@@ -167,11 +174,17 @@ static void uiTaskFn(void* pv) {
 
         const char* det = snap.lastDet[0] ? snap.lastDet : nullptr;
 
+        // Step any armed alert chime. Board-agnostic on purpose: every audio
+        // board shares one sequence (see audioAlert()/audioAlertTick() in
+        // main.cpp), and it must be called from this task because the chime must
+        // not block the scanning side.
+        audioAlertTick();
+
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
-        c5DisplayScore(snap.score, det, snap.phase, snap.lastRssi);
+        c5DisplayScore(snap.score, det, snap.phase, snap.lastRssi, snap.lastMac);
 #endif
 #if defined(USE_M5BASIC)
-        m5basicUpdate(snap.score, det, snap.lastRssi, snap.phase,
+        m5basicUpdate(snap.score, det, snap.lastMac, snap.lastRssi, snap.phase,
                       snap.lastAlertMs, snap.trackedCount, snap.totalEvents);
         {
             int btn = m5basicButtonTick();
@@ -184,7 +197,7 @@ static void uiTaskFn(void* pv) {
 #endif
 #endif
 #if defined(USE_M5STICKC_PLUS_SE)
-        m5stickcUpdate(snap.score, det, snap.lastRssi, snap.phase,
+        m5stickcUpdate(snap.score, det, snap.lastMac, snap.lastRssi, snap.phase,
                        snap.lastAlertMs, snap.trackedCount, snap.totalEvents);
         {
             int btn = m5stickcButtonTick();

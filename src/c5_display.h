@@ -12,6 +12,7 @@
 #include <Adafruit_ST7735.h>
 #include <Adafruit_NeoPixel.h>
 #include <cmath>
+#include "alert_hold.h"   // shared critical-alert hold state machine
 
 // ── Hardware pins ─────────────────────────────────────────────────────────────
 #define C5_TFT_SCLK  5
@@ -160,7 +161,76 @@ static void c5DisplayDetection(const char* detType, const char* mac,
 // score     = current aggregate score
 // lastDet   = short label of most-recent detection type (may be nullptr)
 // phase     = "BLE" | "WIFI" | "PROMISC"
-static void c5DisplayScore(int score, const char* lastDet, const char* phase, int8_t rssi = -100) {
+// ── Frozen CRITICAL panel (see alert_hold.h) ──────────────────────────────────
+// Same content as the other boards: severity + detection type + SOURCE ADDRESS,
+// all solid and held for EA_HOLD_MS so the address can be written down. This
+// panel is only 80 px wide, so the 17-character address is split at the
+// "aa:bb:cc:dd:ee:ff" colon boundary across two 8-character lines; one line
+// would not fit at a legible size.
+static AlertHoldState c5Hold;
+static bool           c5HoldInited = false;
+
+static void c5DrawHeldAlert(const char* det, const char* mac, int8_t rssi,
+                            unsigned long secondsLeft, bool full) {
+    if (!full) {
+        c5Tft.setTextSize(1);
+        c5Tft.setTextColor(0x8410);
+        c5Tft.fillRect(4, 128, 76, 10, ST77XX_BLACK);
+        c5Tft.setCursor(4, 128);
+        c5Tft.printf("held %2lus", (unsigned long)secondsLeft);
+        return;
+    }
+
+    c5Tft.fillScreen(0x8000);   // dark red
+    c5Tft.setTextSize(1);
+    c5Tft.setTextColor(ST77XX_CYAN);
+    c5Tft.setCursor(4, 4);  c5Tft.print("EYE SPY");
+    c5Tft.setTextColor(ST77XX_RED);
+    c5Tft.setCursor(4, 16); c5Tft.print("!! ALERT !!");
+
+    c5Tft.setTextColor(0x8410);
+    c5Tft.setCursor(4, 32); c5Tft.print("DETECT");
+    c5Tft.setTextColor(ST77XX_RED);
+    c5Tft.setCursor(4, 42);
+    { char d13[14]; strncpy(d13, (det && det[0]) ? det : "?", 13); d13[13] = '\0';
+      c5Tft.print(d13); }
+
+    c5Tft.setTextColor(0x8410);
+    c5Tft.setCursor(4, 58); c5Tft.print("SOURCE MAC");
+    if (mac && mac[0]) {
+        c5Tft.setTextColor(ST77XX_RED);
+        c5Tft.setCursor(4, 70); c5Tft.printf("%.8s", mac);   // "aa:bb:cc"
+        c5Tft.setCursor(4, 82); c5Tft.print(mac + 9);        // "dd:ee:ff"
+    } else {
+        c5Tft.setTextColor(0x8410);
+        c5Tft.setCursor(4, 70); c5Tft.print("-- no addr --");
+    }
+
+    c5Tft.setTextColor(0x8410);
+    c5Tft.setCursor(4, 100); c5Tft.printf("RSSI %d", (int)rssi);
+    c5Tft.setCursor(4, 128); c5Tft.printf("held %2lus", (unsigned long)secondsLeft);
+}
+
+static void c5DisplayScore(int score, const char* lastDet, const char* phase,
+                           int8_t rssi = -100, const char* mac = nullptr) {
+    // ── Critical-alert HOLD (see alert_hold.h) ───────────────────────────────
+    // This panel is redrawn from scratch every tick, so a hold here simply means
+    // drawing the held content instead of the live one.
+    int lvl = (score >= 6) ? 2 : (score >= 3) ? 1 : 0;
+    if (!c5HoldInited) { alertHoldInit(&c5Hold); c5HoldInited = true; }
+    unsigned long   holdSecLeft = 0;
+    AlertHoldAction holdAct = alertHoldStep(&c5Hold, lvl, lastDet, mac,
+                                            rssi, millis(), &holdSecLeft);
+    if (holdAct == ALERT_HOLD_DRAW || holdAct == ALERT_HOLD_TICK ||
+        holdAct == ALERT_HOLD_ACTIVE) {
+        // Only the countdown needs repainting on a TICK; a full redraw of a
+        // 160-pixel panel every second is pure flicker for no information gain.
+        c5DrawHeldAlert(c5Hold.det, c5Hold.mac, c5Hold.rssi, holdSecLeft,
+                        /*full=*/holdAct != ALERT_HOLD_TICK);
+        if (holdAct == ALERT_HOLD_DRAW) c5LedAlert();
+        return;
+    }
+
     uint16_t bg = ST77XX_BLACK;
     if (score >= 6)      bg = 0x8000;   // dark red
     else if (score >= 3) bg = 0x8400;   // dark amber
@@ -195,13 +265,33 @@ static void c5DisplayScore(int score, const char* lastDet, const char* phase, in
         c5Tft.print(lastDet);
     }
 
-    // Phase
-    c5Tft.setTextColor(0x8410);   // grey
+    // ── SOURCE ADDRESS — directly under the detection type, in the solid
+    // severity colour, so "how bad" and "which device" read together and the
+    // address can be written down. This panel is only 80 px wide, so the
+    // "aa:bb:cc:dd:ee:ff" address is split at the colon boundary across two
+    // 8-character lines; one line cannot fit at a legible size.
+    c5Tft.setTextColor(0x8410);   // grey label
     c5Tft.setCursor(4, 62);
+    c5Tft.print("MAC");
+    if (mac && mac[0]) {
+        c5Tft.setTextColor(scoreCol);
+        c5Tft.setCursor(4, 72);  c5Tft.printf("%.8s", mac);   // "aa:bb:cc"
+        c5Tft.setCursor(4, 82);  c5Tft.print(mac + 9);        // "dd:ee:ff"
+    } else {
+        // Deliberately explicit: an SSID-only match carries no address, and
+        // showing a stale one from a previous detection would misidentify a
+        // device — the exact confusion this line exists to prevent.
+        c5Tft.setTextColor(0x8410);
+        c5Tft.setCursor(4, 72);  c5Tft.print("-- no addr --");
+    }
+
+    // Phase
+    c5Tft.setTextColor(0x8410);
+    c5Tft.setCursor(4, 96);
     c5Tft.printf("Phase: %s", phase ? phase : "?");
 
     // Estimated range ("triangulation" proxy) — only when we have a real RSSI
-    if (rssi > -100) c5DrawRange(4, 72, rssi, 0x8410 /* grey */);
+    if (rssi > -100) c5DrawRange(4, 108, rssi, 0x8410 /* grey */);
 
     // LED
     if (score >= 6)      c5LedAlert();

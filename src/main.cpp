@@ -97,9 +97,16 @@
   #define USE_C5_DISPLAY  1
 #elif defined(USE_M5BASIC)
   // M5Stack Basic Core v2.7 / Core2 For AWS (aliased above)
+  // 1 W internal I2S speaker (NS4168 on Core2; DAC on Basic), driven through
+  // M5Unified. NOTE: this was USE_M5_SPEAKER 0, which made audioAlert() compile
+  // to `(void)isAlert;` — a silent no-op with no warning and no log. Three
+  // customers reported "the alert is only the vibration" on Core2 units because
+  // of exactly that. M5Unified configures the internal speaker in M5.begin()
+  // (cfg.internal_spk defaults to true), so this needs no explicit pin setup —
+  // see the setup() audio block for the verification + startup chime.
   #define USE_LED         0
   #define USE_BUZZER      0
-  #define USE_M5_SPEAKER  0
+  #define USE_M5_SPEAKER  1
 #elif defined(USE_M5STICKC_PLUS_SE)
   // M5StickC Plus SE — passive buzzer G2, two buttons A/B
   // M5Unified used for display (ST7789v2+AXP192); speaker disabled (no NS4168).
@@ -192,15 +199,92 @@ static bool simpleButtonPressed() {
 static const uint8_t CHANNELS[] = {1,6,11,3,8,13};
 #define NUM_CHANNELS (sizeof(CHANNELS)/sizeof(CHANNELS[0]))
 
-// ─── Audio alert helper ───────────────────────────────────────────────────────
-static void audioAlert(bool isAlert) {
+// ─── Audio alert — two-tone chime (non-blocking) ──────────────────────────────
+// This used to be a single 80 ms blip — and on the M5Stack Basic/Core2 builds it
+// was not even that, because USE_M5_SPEAKER was 0 and the whole function
+// compiled down to `(void)isAlert;`. Silence, with no warning and no log: three
+// customers reported it as "the alert is only the vibration".
+//
+// Now it is a short RISING two-tone chime for a critical alert and a single
+// lower tone for a caution, deliberately mirroring the vibration motor's
+// 2-pulse / 1-pulse distinction so severity can be judged by ear as well as by
+// feel (see m5basicVibrationTick()).
+//
+// WHY A TICK INSTEAD OF delay(): this is called from the UI task, which also
+// redraws the display. Blocking it for ~350 ms to sequence the chime would stall
+// those redraws, which is precisely the class of "frozen screen" bug this
+// project has already had to fix twice (see the vibration tick's history in
+// m5basic_display.h). audioAlert() therefore only ARMS the chime; audioAlertTick()
+// steps it, and is called once per UI-task iteration.
+#define EA_CHIME_CRIT_HZ1    1568   // G6
+#define EA_CHIME_CRIT_HZ2    2093   // C7 — rising interval reads as "attention"
+#define EA_CHIME_CAUTION_HZ   880   // A5 — single, lower: caution only
+#define EA_CHIME_TONE1_MS     130
+#define EA_CHIME_TONE2_MS     240
+#define EA_CHIME_GAP_MS        70
+
+#define EA_CHIME_IDLE     0
+#define EA_CHIME_CRITICAL 1
+#define EA_CHIME_CAUTION  2
+
+static uint8_t       eaChimePattern = EA_CHIME_IDLE;
+static uint8_t       eaChimeStep    = 0;
+static unsigned long eaChimeNextMs  = 0;
+
+// Board-agnostic tone primitives (buzzer boards use the Arduino LEDC tone()).
+static inline void eaTone(uint16_t hz, uint16_t ms) {
 #if USE_BUZZER
-    tone(BUZZER_PIN, isAlert ? 2000 : 880, 80);
+    tone(BUZZER_PIN, hz, ms);
 #elif USE_M5_SPEAKER
-    M5.Speaker.tone(isAlert ? 2000 : 880, 80);
+    M5.Speaker.tone((float)hz, ms);
 #else
-    (void)isAlert;
+    (void)hz; (void)ms;
 #endif
+}
+static inline void eaToneStop() {
+#if USE_BUZZER
+    noTone(BUZZER_PIN);
+#elif USE_M5_SPEAKER
+    M5.Speaker.stop();
+#endif
+}
+
+// Arm the chime for the given severity. Non-blocking; see the note above.
+static void audioAlert(bool isAlert) {
+    eaChimePattern = isAlert ? EA_CHIME_CRITICAL : EA_CHIME_CAUTION;
+    eaChimeStep    = 1;
+    eaChimeNextMs  = millis();   // start immediately on the next tick
+}
+
+// Step an armed chime. Safe to call every iteration; returns at once when idle.
+static void audioAlertTick() {
+    if (eaChimePattern == EA_CHIME_IDLE) return;
+    unsigned long now = millis();
+    if ((long)(now - eaChimeNextMs) < 0) return;
+
+    if (eaChimePattern == EA_CHIME_CRITICAL) {
+        if (eaChimeStep == 1) {
+            eaTone(EA_CHIME_CRIT_HZ1, EA_CHIME_TONE1_MS);
+            eaChimeNextMs = now + EA_CHIME_TONE1_MS + EA_CHIME_GAP_MS;
+            eaChimeStep   = 2;
+        } else if (eaChimeStep == 2) {
+            eaTone(EA_CHIME_CRIT_HZ2, EA_CHIME_TONE2_MS);
+            eaChimeNextMs = now + EA_CHIME_TONE2_MS;
+            eaChimeStep   = 3;
+        } else {
+            eaToneStop();
+            eaChimePattern = EA_CHIME_IDLE;
+        }
+    } else {   // EA_CHIME_CAUTION — one tone
+        if (eaChimeStep == 1) {
+            eaTone(EA_CHIME_CAUTION_HZ, EA_CHIME_TONE1_MS);
+            eaChimeNextMs = now + EA_CHIME_TONE1_MS;
+            eaChimeStep   = 2;
+        } else {
+            eaToneStop();
+            eaChimePattern = EA_CHIME_IDLE;
+        }
+    }
 }
 
 #include "es_detect.h"
@@ -211,6 +295,42 @@ static void audioAlert(bool isAlert) {
 static char     g_mbeLastDet[32]  = {0};
 static int8_t   g_mbeLastRssi     = -100;
 static uint32_t g_mbeTotalEvents  = 0;
+
+// ─── Detection SOURCE identification (which device was it?) ───────────────────
+// The display shows the detection type (g_mbeLastDet, set by mbeDetTrack) and,
+// directly underneath it, the address of the device that caused it. Users asked
+// to be able to identify the source themselves rather than being told only that
+// "something" was seen.
+//
+// The address is captured per *advertisement / scan-result* rather than per
+// engine, in g_pendingDetMac: whatever device is currently being evaluated is
+// the source of every engine that fires for it, so a single pending slot pairs
+// the address with the label without needing a tag→address table. mbeDetTrack()
+// consumes it, which is what guarantees the MAC shown always belongs to the
+// label beside it (the alternative — one global updated whenever any engine
+// matched — could show device A's address under device B's label).
+//
+// Empty ("") means "this detection has no address to give" (an SSID keyword
+// match carries none), and the display renders that as a placeholder rather
+// than confusing the user with a stale address from a previous detection.
+static char     g_lastDetMac[18]    = {0};   // "aa:bb:cc:dd:ee:ff" or ""
+static char     g_pendingDetMac[18] = {0};
+
+static inline void esFormatMac6(const uint8_t* m, char* out) {
+    snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+static inline void esNotePendingMac6(const uint8_t* m) {
+    if (m) esFormatMac6(m, g_pendingDetMac);
+    else   g_pendingDetMac[0] = '\0';
+}
+// NimBLE already renders its addresses MSB-first ("aa:bb:cc:dd:ee:ff"), so this
+// is a straight copy — no byte-order flip is needed on this path.
+static inline void esNotePendingMacStr(const char* s) {
+    if (s && strlen(s) == 17) { memcpy(g_pendingDetMac, s, 17); g_pendingDetMac[17] = '\0'; }
+    else                      { g_pendingDetMac[0] = '\0'; }
+}
+static inline void esClearPendingMac(void) { g_pendingDetMac[0] = '\0'; }
 
 // ─── Phase / app state ────────────────────────────────────────────────────────
 // PHASE_WIFI_WAIT: async scan started; main loop keeps running (LED never stalls)
@@ -280,6 +400,10 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
         std::string   addr = adv->getAddress().toString();
         std::string   name = adv->getName();
         bool          matched = false;
+
+        // Start every advertisement with no source address latched; the tail of
+        // this method sets it only if an engine matches (see esNotePendingMacStr).
+        esClearPendingMac();
 
         // ── 1. Axon body camera — OUI 00:25:df ──────────────────────────────
         if (addr.size() >= 8 &&
@@ -486,6 +610,14 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
                 d.seenCount = 1; d.scored = false;
             }
         }
+
+        // Latch this advertisement's address as the SOURCE for whichever engine
+        // reports it — consumed by mbeDetTrack() when the flag is drained, so the
+        // address shown on screen always belongs to the label beside it. Only set
+        // when something actually matched: on a non-matching advertisement the
+        // slot stays empty so the display falls back to "--" rather than showing
+        // the previous, unrelated device's address.
+        if (matched) esNotePendingMacStr(addr.c_str());
     }
 };
 
@@ -518,8 +650,11 @@ static void startBLEScan() {
 // they match against.
 // Records last-fired detection type/RSSI for m5basic_display.
 // Compiled unconditionally (tiny); called from CHECK_DET.
+// Also latches the SOURCE address captured alongside this detection (see
+// g_pendingDetMac) so the display can name the device behind the label.
 static inline void mbeDetTrack(const char* tag, int8_t rssi) {
     strncpy(g_mbeLastDet, tag, 31); g_mbeLastDet[31] = '\0';
+    memcpy(g_lastDetMac, g_pendingDetMac, sizeof(g_lastDetMac));
     g_mbeLastRssi = rssi;
     g_mbeTotalEvents++;
 }
@@ -555,6 +690,16 @@ static void processWifiScan(int n) {
         if (WiFi.RSSI(i) < RSSI_MIN) continue;
         uint8_t*    bssid = WiFi.BSSID(i);
         const char* ssid  = WiFi.SSID(i).c_str();
+
+        // Latch this access point's FULL BSSID as the source for any engine that
+        // matches it below (consumed by mbeDetTrack()). Every WiFi engine here
+        // derives from this one scanned BSSID — including the SSID-keyword ones,
+        // where the BSSID is the AP broadcasting that SSID — so a single latch per
+        // result covers all of them and keeps the address consistent with the
+        // label. The firmware previously printed only the 3-byte OUI prefix, so
+        // the dashboard could never identify a specific device; the full address
+        // is now noted for the display and the detection log lines.
+        esNotePendingMac6(bssid);
 
         // Firmware-default radio MAC (exact 6-byte match, firmware-derived set
         // 2026-09-16). Checked FIRST because those addresses live inside the
@@ -670,6 +815,7 @@ static void updateLED() {
                      (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
     uiPublish(g_score,
               g_mbeLastDet[0] ? g_mbeLastDet : nullptr,
+              g_lastDetMac,
               g_mbeLastRssi, ph,
               g_stickySeen ? millis() - g_stickySeen : 0UL,
               (int)g_trackedCount, g_mbeTotalEvents);
@@ -718,7 +864,7 @@ void setup() {
     Serial.println("[eyespy] M5Stack Basic/Core2 ready");
     // Immediately replace the static splash with the live scanning screen so the
     // display doesn't appear stuck on "Init..." while NimBLE/WiFi come up.
-    m5basicUpdate(0, nullptr, -100, "BLE", 0UL, 0, 0);
+    m5basicUpdate(0, nullptr, nullptr, -100, "BLE", 0UL, 0, 0);
 #endif
 #if defined(USE_M5STICKC_PLUS_SE)
     // M5Unified init for display (AXP192 backlight) + button detection.
@@ -727,7 +873,7 @@ void setup() {
     Serial.println("[eyespy] M5StickC Plus SE ready");
     // Immediately replace the static splash with the live scanning screen so the
     // display doesn't appear stuck on "Init..." while NimBLE/WiFi come up.
-    m5stickcUpdate(0, nullptr, -100, "BLE", 0UL, 0, 0);
+    m5stickcUpdate(0, nullptr, nullptr, -100, "BLE", 0UL, 0, 0);
 #endif
 
 
@@ -750,7 +896,9 @@ void setup() {
     tone(BUZZER_PIN, 1760, 100); delay(200);
     noTone(BUZZER_PIN);
     Serial.println("[eyespy] Atom Echo (buzzer) ready");
-#elif USE_M5_SPEAKER
+#elif defined(ATOM_VOICE)
+    // Atom Voice S3R: M5Unified's board probe for this module is unreliable, so
+    // the I2S pins are configured explicitly here rather than relying on it.
     {
         auto m5cfg = M5.config();
         M5.begin(m5cfg);
@@ -783,6 +931,33 @@ void setup() {
     M5.Speaker.tone(1320, 100); delay(150);
     M5.Speaker.tone(1760, 100); delay(200);
     Serial.println("[eyespy] Atom Voice S3R (I2S) ready");
+#elif USE_M5_SPEAKER
+    // M5Stack Basic / Core2 For AWS — 1 W internal speaker, driven via M5Unified.
+    //
+    // Deliberately does NOT re-begin or re-configure the speaker. m5basicInit()
+    // already ran M5.begin(), and M5Unified's cfg.internal_spk defaults to true,
+    // so its _begin_audio() has already applied this board's own I2S pins and
+    // codec/callback setup. Re-configuring pins here is necessary for the Atom
+    // Voice branch above (M5Unified's probe for that module is unreliable) but
+    // doing it on a correctly-detected Core2 would fight M5Unified's setup and
+    // drive the wrong GPIOs.
+    //
+    // isEnabled() reports whether speaker pins are configured at all — which is
+    // exactly the "board misdetected as one without a speaker" failure mode that
+    // otherwise produces total silence with no error anywhere. Log it, because
+    // silence is indistinguishable from a quiet alert.
+    if (!M5.Speaker.isEnabled()) {
+        Serial.println("[eyespy] WARN M5.Speaker not enabled — audio alerts "
+                       "will be SILENT on this board");
+    }
+    M5.Speaker.setVolume(220);
+    // Startup chime — audible confirmation that the speaker works, for the user
+    // and for support, without waiting for a real detection. Blocking is fine
+    // here: setup() has not started the UI task yet.
+    M5.Speaker.tone(1047, 120); delay(160);   // C6
+    M5.Speaker.tone(1319, 120); delay(160);   // E6
+    M5.Speaker.tone(1568, 200); delay(220);   // G6
+    Serial.println("[eyespy] M5Stack Basic/Core2 speaker ready (startup chime played)");
 #endif
 
     WiFi.mode(WIFI_STA);
