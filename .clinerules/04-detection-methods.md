@@ -245,6 +245,30 @@ against the other two** — they exist to express the same three levels.
   `audioAlert(level >= 2)` only when the level *crosses* upward, so a device
   that sits at ALERT does not re-chime every tick.
 
+### Decaying alert/caution tally (`src/activity_counts.h`)
+
+The screen shows `ALERTS: n` (red) and `CAUTIONS: n` (amber) — a count of
+**episodes**, decaying over time. It replaced the old `Total events` line, which
+counted every detection-engine fire since boot and only ever grew; customers
+read "530" as 530 alerts and concluded the opposite of the truth. The lifetime
+figure still exists, but moved to the **serial status line as `events=`** where
+it is a diagnostic rather than something a user can misread.
+
+- Counted on the **same rising edge that fires the chime** (`ui_task.h`), so the
+  number on screen can never disagree with what was heard. Only a *rise* counts:
+  a device parked at ALERT for an hour is one alert, not one per tick.
+- Reaching ALERT directly from CLEAR counts one alert and **no** caution — the
+  caution level was never reached.
+- Decay is one point per `ACTIVITY_DECAY_MS` (120 s, deliberately the same span
+  as `DETECTION_RESCORE_MS` so the tally and the reading fade together), and it
+  is **independent of new events**, so a quiet spell returns it to zero.
+- Capped at `ACTIVITY_COUNT_MAX` (99): keeps the on-screen width constant so the
+  layout cannot shift mid-alert.
+- **Do not show `events=` (the lifetime count) on the display strip.** The strip
+  truncates at `MBE_LOG_LINE_LEN` (53 chars) and the full status line with
+  `events=` measured 55 — it would be silently clipped, with nothing to report
+  it. It is serial-only for that reason.
+
 ### Source MAC on screen
 
 The address of the device that triggered a detection is shown directly beneath

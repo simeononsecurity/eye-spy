@@ -51,7 +51,7 @@
 //    and audioAlert() only fires a non-blocking tone().
 //
 // Public interface expected by main.cpp:
-//   uiPublish(score, lastDet, lastRssi, phase, lastAlertMs, trackedCount, totalEvents)
+//   uiPublish(score, lastDet, lastMac, lastRssi, phase, lastAlertMs, trackedCount)
 //                          — called once per loop() iteration (from updateLED())
 //   uiTakeButtonAction()  — called once per loop() iteration; returns 0/1/3
 //                            (matches the pre-existing m5basicButtonTick()/
@@ -63,6 +63,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "activity_counts.h"   // decaying alert/caution tally for the screen
 
 // ── Snapshot published by the scanning side, consumed by the UI task ─────────
 struct UiSnapshot {
@@ -73,10 +74,9 @@ struct UiSnapshot {
     char          phase[12];
     unsigned long lastAlertMs;
     int           trackedCount;
-    uint32_t      totalEvents;
 };
 
-static UiSnapshot   g_uiSnap = { 0, {0}, {0}, -100, {0}, 0, 0, 0 };
+static UiSnapshot   g_uiSnap = { 0, {0}, {0}, -100, {0}, 0, 0 };
 static portMUX_TYPE  g_uiMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Button action reported by the UI task, consumed once by loop().
@@ -88,8 +88,7 @@ static portMUX_TYPE     g_uiBtnMux = portMUX_INITIALIZER_UNLOCKED;
 // Cheap: just a bounded strncpy/memcpy under a short critical section.
 static void uiPublish(int score, const char* lastDet, const char* lastMac,
                        int8_t lastRssi, const char* phase,
-                       unsigned long lastAlertMs, int trackedCount,
-                       uint32_t totalEvents) {
+                       unsigned long lastAlertMs, int trackedCount) {
     portENTER_CRITICAL(&g_uiMux);
     g_uiSnap.score = score;
     if (lastDet) { strncpy(g_uiSnap.lastDet, lastDet, sizeof(g_uiSnap.lastDet) - 1);
@@ -105,7 +104,6 @@ static void uiPublish(int score, const char* lastDet, const char* lastMac,
                     g_uiSnap.phase[sizeof(g_uiSnap.phase) - 1] = '\0'; }
     g_uiSnap.lastAlertMs  = lastAlertMs;
     g_uiSnap.trackedCount = trackedCount;
-    g_uiSnap.totalEvents  = totalEvents;
     portEXIT_CRITICAL(&g_uiMux);
 }
 
@@ -135,6 +133,11 @@ static TaskHandle_t g_uiTaskHandle = nullptr;
 static void uiTaskFn(void* pv) {
     (void)pv;
     static int prevLevel = 0;
+    // Decaying alert/caution tally (see activity_counts.h). UI-task-local: it is
+    // a presentation statistic derived from the level, so it does not belong in
+    // the cross-task snapshot and needs no locking.
+    static ActivityCounts activity;
+    static bool activityInited = false;
     const TickType_t period = pdMS_TO_TICKS(50);   // ~20Hz poll; each display
                                                      // fn still self-throttles
                                                      // its own actual redraw.
@@ -160,8 +163,18 @@ static void uiTaskFn(void* pv) {
 
         int level = (snap.score >= SCORE_ALERT)   ? 2 :
                     (snap.score >= SCORE_CAUTION) ? 1 : 0;
-        if (level > prevLevel) audioAlert(level >= 2);
+        if (!activityInited) { activityCountsInit(&activity, now); activityInited = true; }
+        if (level > prevLevel) {
+            audioAlert(level >= 2);
+            // Count the episode on the same rising edge that fires the chime, so
+            // the tally on screen can never disagree with what was heard. Only a
+            // rise is counted — a device parked at ALERT stays one alert.
+            activityCountsNote(&activity, level, now);
+        }
         prevLevel = level;
+        // Let the tallies fall while nothing new happens, so the display reflects
+        // recent activity rather than everything since boot.
+        activityCountsDecay(&activity, now);
 
         if (level >= 2) {
             bool on = ((now / ALERT_FLASH_HALF_MS) & 1) == 0;
@@ -185,7 +198,8 @@ static void uiTaskFn(void* pv) {
 #endif
 #if defined(USE_M5BASIC)
         m5basicUpdate(snap.score, det, snap.lastMac, snap.lastRssi, snap.phase,
-                      snap.lastAlertMs, snap.trackedCount, snap.totalEvents);
+                      snap.lastAlertMs, snap.trackedCount,
+                      activity.alerts, activity.cautions);
         {
             int btn = m5basicButtonTick();
             if (btn == 1 || btn == 3) uiSetButtonAction((uint8_t)btn);
@@ -198,7 +212,8 @@ static void uiTaskFn(void* pv) {
 #endif
 #if defined(USE_M5STICKC_PLUS_SE)
         m5stickcUpdate(snap.score, det, snap.lastMac, snap.lastRssi, snap.phase,
-                       snap.lastAlertMs, snap.trackedCount, snap.totalEvents);
+                       snap.lastAlertMs, snap.trackedCount,
+                       activity.alerts, activity.cautions);
         {
             int btn = m5stickcButtonTick();
             if (btn == 1 || btn == 3) uiSetButtonAction((uint8_t)btn);

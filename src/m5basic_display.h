@@ -441,7 +441,8 @@ static void m5basicInit() {
 //   phase         — "BLE" | "WIFI" | "PROMISC" | "STARTUP"
 //   lastAlertMs   — millis() elapsed since g_stickySeen (0 if no detection yet)
 //   trackedCount  — number of tracked unknown BLE devices
-//   totalEvents   — total detection engine fire count since boot
+//   alertCount    — decaying count of alert (red) episodes (activity_counts.h)
+//   cautionCount  — decaying count of caution (amber) episodes
 // ── Frozen CRITICAL panel ─────────────────────────────────────────────────────
 // Replaces the live dashboard while a critical alert is held on screen (see
 // EA_HOLD_MS in alert_hold.h). It shows the three things a user has to act on —
@@ -519,7 +520,7 @@ static void mbe_drawFrozenAlert(const char* det, const char* mac, int8_t rssi,
 static void m5basicUpdate(int score, const char* lastDet, const char* lastMac,
                            int8_t lastRssi, const char* phase,
                            unsigned long lastAlertMs, int trackedCount,
-                           uint32_t totalEvents) {
+                           uint8_t alertCount, uint8_t cautionCount) {
     int lvl = mbe_level(score);
     const char* macNow = (lastMac && lastMac[0]) ? lastMac : "";
     const char* detNow = lastDet ? lastDet : "";
@@ -595,7 +596,8 @@ static void m5basicUpdate(int score, const char* lastDet, const char* lastMac,
     // Top padding and inter-line gaps below are slightly tighter than the
     // original layout (6->4 top pad, 40->38 after the big score digit,
     // 22->20 after the detection name, 13->12 after the range estimate,
-    // 12->11 after Total events, and three hline gaps 5->4px) to free ~11px
+    // 12->11 after the alert/caution tally line (formerly "Total events"),
+    // and three hline gaps 5->4px) to free ~11px
     // of vertical room for the enlarged log strip (MBE_LOG_H, grown from 24
     // to 33px — see mbe_drawLogStrip()) without the content area colliding
     // with it. Worst case (detection shown) verified by hand to leave a
@@ -687,10 +689,17 @@ static void m5basicUpdate(int score, const char* lastDet, const char* lastMac,
     mbe_drawAlertLine(y, lastAlertMs);
     y += 13;
 
-    // Total events
-    M5.Display.setTextColor(MBE_GREY, MBE_BLACK);
+    // Alert / caution tally. Counts EPISODES (a rise to each level), and decays
+    // on its own — see activity_counts.h. Red for real alerts, amber for
+    // cautions, so "how much has been happening, and how bad" reads at a glance.
+    // Replaces the old "Total events" line, which only ever grew and told the
+    // user nothing about now.
+    M5.Display.setTextSize(1);
     M5.Display.setCursor(8, y);
-    M5.Display.printf("Total events: %lu  |  Score decay: 60s", (unsigned long)totalEvents);
+    M5.Display.setTextColor(MBE_RED, MBE_BLACK);
+    M5.Display.printf("ALERTS: %u", (unsigned)alertCount);
+    M5.Display.setTextColor(MBE_YELLOW, MBE_BLACK);
+    M5.Display.printf("   CAUTIONS: %u", (unsigned)cautionCount);
     y += 11;
 
     // Score bar

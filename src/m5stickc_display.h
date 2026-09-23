@@ -284,7 +284,7 @@ static void msce_drawHeldAlert(const char* det, const char* mac, int8_t rssi,
 static void m5stickcUpdate(int score, const char* lastDet, const char* lastMac,
                             int8_t lastRssi, const char* phase,
                             unsigned long lastAlertMs, int trackedCount,
-                            uint32_t totalEvents) {
+                            uint8_t alertCount, uint8_t cautionCount) {
     int lvl = msce_level(score);
     const char* macNow = (lastMac && lastMac[0]) ? lastMac : "";
 
@@ -375,8 +375,13 @@ static void m5stickcUpdate(int score, const char* lastDet, const char* lastMac,
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(MSCE_LT_GREY, MSCE_BLACK);
     M5.Display.setCursor(3, y);
-    M5.Display.printf("Phase:%-6s  Trk:%d  Evts:%lu",
-                      phase?phase:"?", trackedCount, (unsigned long)totalEvents);
+    M5.Display.printf("Phase:%-6s  Trk:%d  ", phase?phase:"?", trackedCount);
+    // Decaying episode tally (see activity_counts.h): red = real alerts,
+    // amber = cautions. Replaces the old endlessly-growing "Evts:" counter.
+    M5.Display.setTextColor(MSCE_RED, MSCE_BLACK);
+    M5.Display.printf("ALERTS:%u ", (unsigned)alertCount);
+    M5.Display.setTextColor(MSCE_YELLOW, MSCE_BLACK);
+    M5.Display.printf("CAUT:%u", (unsigned)cautionCount);
     y += 12;
 
     msce_hline(y); y += 4;

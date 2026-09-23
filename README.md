@@ -147,6 +147,17 @@ The address is the actionable part: it identifies *which* device caused the aler
 - It is shown as `--` rather than reusing the previous detection's address on purpose: a stale address would misidentify an innocent device, which is precisely the confusion this line exists to remove.
 - On the **T-Dongle C5** the screen is only 80 px wide, so the address wraps across two lines (`aa:bb:cc` / `dd:ee:ff`).
 
+### Screen: decaying alert and caution tallies
+
+Below the detection details the panel shows two counts, each coloured to match its level:
+
+- **`ALERTS: n`** in red — how many times the device has reached the alert level.
+- **`CAUTIONS: n`** in amber — how many times it has reached the caution level.
+
+Both count **episodes, not time**: a device parked at ALERT for an hour is *one* alert, not thousands. Both also **decay**, losing one point every two minutes (`ACTIVITY_DECAY_MS`), so they describe the recent past rather than everything since boot — and a quiet spell winds them back to zero on their own.
+
+They replace the old `Total events` line, which counted every detection the firmware logged and only ever grew. That figure was widely misread as an alert count (three customers reported "530 alerts" from a single session), so it now appears in the **serial status line as `events=`**, where support can read it but nobody can mistake it for alerts.
+
 ### Critical alerts hold the screen for 15 seconds
 
 A critical detection is usually momentary. On a live dashboard it would be replaced — severity *and* address together — before either could be read. So when severity reaches **ALERT** the panel is held for **15 seconds** (`EA_HOLD_MS`), showing severity, detection type and source MAC, with a countdown so it is obvious the device is still running rather than hung.

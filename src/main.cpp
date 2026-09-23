@@ -491,7 +491,15 @@ class EyeSpyBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
                     g_ravenBleDet=true; g_ravenBleRssi=rssi; g_ravenBleSeen=now;
                     // Rate-limit the UUID detail log; always print on first detection
                     if (g_ravenBleCount == 0 || now - g_ravenBleLoggedAt >= DETECTION_RESCORE_MS) {
-                        Serial.printf("[eyespy] Raven UUID %s RSSI=%d\n", *uuid, (int)rssi);
+                        // Two spaces before RSSI= on purpose: every other
+                        // detection emitter uses that shape, and this line used
+                        // to print a single space — which the dashboard API's
+                        // _RE_BLE (then requiring two or more) could not match,
+                        // so every Raven detection was silently dropped before
+                        // it ever reached the dashboard. Keep the spacing
+                        // uniform so the next detector copied from this one
+                        // cannot reintroduce it.
+                        Serial.printf("[eyespy] Raven UUID %s  RSSI=%d\n", *uuid, (int)rssi);
                     }
                     matched=true; break;
                 }
@@ -818,7 +826,7 @@ static void updateLED() {
               g_lastDetMac,
               g_mbeLastRssi, ph,
               g_stickySeen ? millis() - g_stickySeen : 0UL,
-              (int)g_trackedCount, g_mbeTotalEvents);
+              (int)g_trackedCount);
 }
 
 
@@ -832,11 +840,24 @@ static void printStatus() {
                      (g_phase==PHASE_WIFI_SCAN || g_phase==PHASE_WIFI_WAIT) ? "WIFI" : "PROMISC";
     const char* st = (g_score>=SCORE_ALERT) ? "ALERT" :
                      (g_score>=SCORE_CAUTION) ? "CAUTION" : "CLEAR";
-    Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d\n",
-                  g_score, st, ph, (int)g_trackedCount);
+    // events= is the lifetime detection-engine fire count. It used to be shown
+    // on screen as "Total events" and misled customers into reading it as an
+    // alert count (see docs/customer-replies.md); it stays in the serial status
+    // because it is genuinely useful when supporting a unit ("it logged N
+    // things in M hours"), and at boot/UART it cannot be mistaken for an alert
+    // total on a screen.
+    Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d  events=%lu\n",
+                  g_score, st, ph, (int)g_trackedCount,
+                  (unsigned long)g_mbeTotalEvents);
 #if defined(USE_M5BASIC)
     {
-        char _mbeStatusLine[64];
+        // Deliberately does NOT include events=: the on-screen strip truncates
+        // at MBE_LOG_LINE_LEN (53 chars), and the full status line with events
+        // measured 55 — the field would have been silently clipped off the end
+        // with nothing to report it. The lifetime count is a support figure, so
+        // it goes to the serial log only (see the Serial.printf above), where
+        // there is no width limit. Do not add it here without re-measuring.
+        char _mbeStatusLine[MBE_LOG_LINE_LEN + 8];
         snprintf(_mbeStatusLine, sizeof(_mbeStatusLine),
                  "status score=%d %s phase=%s tracked=%d",
                  g_score, st, ph, (int)g_trackedCount);
@@ -864,7 +885,7 @@ void setup() {
     Serial.println("[eyespy] M5Stack Basic/Core2 ready");
     // Immediately replace the static splash with the live scanning screen so the
     // display doesn't appear stuck on "Init..." while NimBLE/WiFi come up.
-    m5basicUpdate(0, nullptr, nullptr, -100, "BLE", 0UL, 0, 0);
+    m5basicUpdate(0, nullptr, nullptr, -100, "BLE", 0UL, 0, 0, 0);
 #endif
 #if defined(USE_M5STICKC_PLUS_SE)
     // M5Unified init for display (AXP192 backlight) + button detection.
@@ -873,7 +894,7 @@ void setup() {
     Serial.println("[eyespy] M5StickC Plus SE ready");
     // Immediately replace the static splash with the live scanning screen so the
     // display doesn't appear stuck on "Init..." while NimBLE/WiFi come up.
-    m5stickcUpdate(0, nullptr, nullptr, -100, "BLE", 0UL, 0, 0);
+    m5stickcUpdate(0, nullptr, nullptr, -100, "BLE", 0UL, 0, 0, 0);
 #endif
 
 

@@ -102,6 +102,17 @@ this workflow before considering any firmware change complete.
    status / decay / `WiFi done` / boot lines may legitimately return
    `None`). Re-run that check whenever the log format changes.
 
+   **Re-running it is not a formality — it has now caught three instances of
+   this bug, the third only on a re-run.** The Raven UUID line
+   (`"[eyespy] Raven UUID %s RSSI=%d"`) printed a *single* space before
+   `RSSI=`, while `_RE_BLE` required two or more (it was written against the
+   `CHECK_DET()` emitters, which print `tag "  RSSI=..."`). Every Raven
+   detection therefore parsed, failed to match, and returned `None`: never on
+   the dashboard, never in the session, never in an export, no error anywhere.
+   `_RE_BLE` now uses `\s+` and the firmware emits uniformly two spaces, but
+   the lesson is the general one — when a new emitter is added, or an existing
+   one is reformatted, instantiate it and check the parser actually accepts it.
+
 11. **`[env:lilygo-t-dongle-c5]` cannot be built in this repo at all — verify
    `src/c5_display.h` changes another way.** The env pins `espressif32@6.7.0`,
    whose Arduino core (2.0.16) ships **no** `platformio-build-esp32c5.py`, so

@@ -66,7 +66,17 @@ def find_gps_match(ts):
 _RE_SCORE  = re.compile(r'\[eyespy\] \+(\d+) \(([^)]+)\)\s+score=(\d+)')
 _RE_STATUS = re.compile(r'\[eyespy\] status\s+score=(\d+)\s+(\w+)\s+phase=(\w+)\s+tracked=(\d+)')
 _RE_DECAY  = re.compile(r'\[eyespy\] decay\s+score=(\d+)')
-_RE_BLE    = re.compile(r'\[eyespy\] (.+?)\s{2,}RSSI=(-?\d+)')
+_RE_BLE    = re.compile(r'\[eyespy\] (.+?)\s+RSSI=(-?\d+)')
+# NOTE the single '\s+', not '\s{2,}'. This pattern previously required TWO OR
+# MORE spaces before RSSI=, which matches the CHECK_DET() emitters (they print
+# `tag "  RSSI=..."`) but NOT the Raven UUID line, which prints
+# `"[eyespy] Raven UUID %s RSSI=%d"` with a single space. The result was that
+# every Raven detection was parsed, failed to match, and returned None — so it
+# never reached the dashboard, the session or any export, with no error anywhere.
+# This is the third instance of exactly this failure mode (see also the SSID
+# lines and the padded right-aligned OUI lines); the firmware emitters are now
+# uniformly two-space, but the pattern stays tolerant so units flashed with the
+# older one-space form are still recorded.
 # Firmware-default radio MAC line — note it says "MAC", not "OUI", because it is
 # an exact full-address match rather than an OUI-prefix match, so neither
 # _RE_WIFI nor _RE_WIFI2 (both of which require the literal word "OUI") can
