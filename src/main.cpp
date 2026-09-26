@@ -182,6 +182,19 @@ static bool simpleButtonPressed() {
 #endif
 
 
+// ─── Wire/log schema version ─────────────────────────────────────────────────
+// The serial log IS this firmware's API: api/eyespy.py parses these lines with
+// patterns rather than structurally, so a formatting change does not raise an
+// error — the line simply fails to match and is dropped in silence. That has
+// happened three times (SSID-only lines, padded OUI lines, and the Raven UUID
+// line's single space before RSSI=), each time making a whole detection class
+// invisible to the dashboard with no error anywhere.
+//
+// BUMP THIS whenever an EXISTING line's shape, field order, spacing or meaning
+// changes. Adding a brand-new distinct line does not require a bump. See
+// docs/adr/0002-log-schema-versioning.md, and record the bump in CHANGELOG.md.
+#define ES_LOG_SCHEMA 1
+
 // ─── Tuning ──────────────────────────────────────────────────────────────────
 #define RSSI_MIN               -90
 #define BLE_SCAN_DURATION_S      9
@@ -875,6 +888,12 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.println("[eyespy] Eye Spy v1.3 starting");
+    // schema= identifies the serial log format this unit emits (ADR-0002,
+    // docs/adr/0002-log-schema-versioning.md). It is printed in the banner so a
+    // unit's format can be identified from a pasted boot log before any
+    // detection has occurred — the dashboard's parser is pattern-based, so a
+    // format change makes lines vanish silently rather than erroring.
+    Serial.printf("[eyespy] log schema=%d\n", ES_LOG_SCHEMA);
 
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
     c5DisplayInit();

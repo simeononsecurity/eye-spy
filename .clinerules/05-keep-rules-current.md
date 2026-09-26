@@ -54,3 +54,25 @@ Update the relevant file in this folder (or add a new one) whenever you:
   hardware testing, careful code reading, or direct experience fixing a
   real bug) — see `02-test-before-commit.md`'s standard for what counts as
   "confirmed."
+
+## ADRs vs these rules
+
+`docs/adr/` holds **decisions**; this folder holds **lessons**:
+
+| Question | Where |
+|----------|-------|
+| "How do I build/test this without getting bitten?" | `.clinerules/` |
+| "Why is it built *this way*, and what did we give up?" | `docs/adr/` |
+
+Write an ADR when a choice is expensive to reverse, has alternatives a reader
+would otherwise re-propose, or constrains future work (where configuration
+lives, what the log format guarantees, which board gets which output). Write a
+rule here when the knowledge is procedural — a command, a failure mode to watch
+for, a verification step. A *fact about the code* that a reader would find in one
+file belongs in a comment at that call site instead.
+
+Supersede an ADR with a new ADR rather than editing the old one: the old record
+is how a future session learns why the first answer stopped being right.
+
+The user-facing counterpart to these files is `CHANGELOG.md` (what changed) —
+keep all three in step when behaviour changes.

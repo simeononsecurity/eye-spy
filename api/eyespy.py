@@ -97,6 +97,33 @@ _RE_WIFI2  = re.compile(r'\[eyespy\] (.+?) OUI\s+([0-9a-fA-F:]{8})')
 # never reached the dashboard or the exports. Found by feeding the firmware's
 # own log lines through parse_eyespy_line() and asserting none returned None.
 _RE_SSID   = re.compile(r'\[eyespy\] (.+? SSID)\s+"([^"]*)"')
+# Boot-banner schema line (ADR-0002, docs/adr/0002-log-schema-versioning.md):
+# the firmware prints "[eyespy] log schema=N". This is not a detection — it
+# exists so a version skew can be *reported* instead of showing up as detections
+# that quietly never arrive, which is how the three bugs above presented.
+_RE_SCHEMA = re.compile(r'\[eyespy\] log schema=(\d+)')
+
+# Highest log schema this parser understands. Bump when the regexes below are
+# updated for a newer firmware format.
+LOG_SCHEMA_UNDERSTOOD = 1
+_schema_warned = False
+
+
+def note_log_schema(line) -> None:
+    """Warn once if the device speaks a newer log format than this parser knows."""
+    global _schema_warned
+    m = _RE_SCHEMA.search(line or '')
+    if not m or _schema_warned:
+        return
+    try:
+        schema = int(m.group(1))
+    except (TypeError, ValueError):
+        return
+    if schema > LOG_SCHEMA_UNDERSTOOD:
+        _schema_warned = True
+        print(f"WARNING: device speaks log schema {schema}; this parser understands "
+              f"{LOG_SCHEMA_UNDERSTOOD}. Unrecognised lines will be dropped silently — "
+              f"update the API.")
 
 # ---------------------------------------------------------------------------
 # Firmware-derived detection signatures  (Flock camera firmware dump,
@@ -404,6 +431,10 @@ def eye_reader():
                         serial_buf.append(line)
                         if len(serial_buf) > 500: serial_buf.pop(0)
                         safe_emit('serial_data', line, room='terminal')
+                        # Report a log-format version skew once, before parsing
+                        # (ADR-0002). Without this a newer unit's lines would just
+                        # vanish into the same silence the three parser bugs did.
+                        note_log_schema(line)
                         det = parse_eyespy_line(line)
                         if det and det.get('detection_type') in ('wifi','ble'): add_detection(det)
                 except Exception as e:

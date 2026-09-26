@@ -15,7 +15,9 @@ Continuously monitors Bluetooth LE and WiFi for recording devices, surveillance 
 
 **Support:** [customer replies](docs/customer-replies.md) — ready-made answers to
 the questions that come back most often (sound, buzz patterns, what the event
-counter means, how to identify a detected device).
+counter means, how to identify a detected device). &middot;
+[Changelog](CHANGELOG.md) &middot;
+[Design decisions](docs/adr/)
 
 ---
 
