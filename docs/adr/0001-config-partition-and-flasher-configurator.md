@@ -1,6 +1,9 @@
 # ADR-0001: Runtime config partition and web-flasher configurator
 
-**Status:** Proposed
+**Status:** Accepted — firmware side implemented; the web-flasher UI that writes
+the blob is still to come (the firmware defaults preserve current behaviour in the
+meantime, so there is no half-applied state: with no blob present the device
+behaves exactly as before)
 **Date:** 2026-09-19
 **Supersedes:** none
 
@@ -138,3 +141,30 @@ that blob from the user's choices and flash it as an extra manifest part.**
    confirming a board *without* audio is unaffected by the sound setting.
 5. Firmware reflash over an existing `escfg` preserves settings.
 
+
+## Implementation notes (firmware side, as built)
+
+- `escfg` took its 4 KB from `spiffs` (`0x10000` → `0xF000`) as budgeted, and
+  nothing is lost: this firmware persists nothing on-device. `nvs`, `otadata`,
+  `app0` and `app1` offsets are untouched, so existing OTA slots stay valid.
+- **Both gates are "clear the flag before anything downstream sees it"**, one per
+  protocol, rather than a check inside each engine:
+  - Wi-Fi: after the scan loop in `processWifiScan()`, before any `addScore()` or
+    `Serial.printf()`. One table-driven block replaces nine separate edits.
+  - Bluetooth: at the top of `processBLE()`, before `CHECK_DET`/`CHECK_TRACKER`.
+  That placement is what makes "disabled" mean genuinely silent — no score, no
+  log line, no on-screen entry, no dashboard record — rather than merely
+  unscored.
+- The threshold is a *minimum score*, and the configured value can only be
+  `>= SCORE_ALERT`. It therefore makes the device quieter but can never let a
+  +5-tier signal alert on its own, which is the trap this project has hit three
+  times (each presenting as a stuck-red LED). The floor is clamped on decode.
+- The tracker-follow window became a parameter
+  (`trackerFollowUpdate(state, now, followMs)`), defaulted to the compile-time
+  value so existing callers and the 15 tracker tests are unaffected. The firmware
+  passes the user's configured minutes; keeping it a parameter rather than reading
+  the config inside `es_detect.h` preserves that header's host-testability.
+- `m5basicVibrationStop()` was added because skipping the vibration *tick* would
+  leave the motor energised mid-pulse. The startup pulses and the arming path are
+  gated too, and the config loads at the top of `setup()` so a "no vibration"
+  choice is honoured from boot.

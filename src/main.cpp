@@ -302,6 +302,44 @@ static void audioAlertTick() {
 
 #include "es_detect.h"
 #include "es_confidence.h"
+#include "es_config.h"        // user configuration blob (web-flasher configurator)
+#include "esp_partition.h"
+
+// ── User configuration (ADR-0001) ────────────────────────────────────────────
+// Loaded once at the top of setup(), before display/audio init and before any
+// radio starts. That ordering matters twice over: the UI task reads these fields
+// without a lock (nothing writes them after setup), and the startup screen/audio
+// can honour the user's choices instead of being overridden a moment later.
+//
+// g_cfgLoaded == false means "no user configuration" — every accessor then
+// returns the compile-time default, so a device flashed without a config (or with
+// the partition erased) behaves exactly as it did before this existed.
+EsConfig g_cfg;
+bool     g_cfgLoaded = false;
+
+// Read the `escfg` partition and decode it. Any failure — partition absent,
+// erased, corrupt, or from a newer schema — falls back to defaults with a log
+// line. A bad config must never stop the detector from starting: silent
+// non-startup is the failure mode this project has been bitten by repeatedly.
+static bool esConfigLoad() {
+    const esp_partition_t* part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "escfg");
+    if (!part) {
+        Serial.println("[eyespy] config: no escfg partition (defaults)");
+        return false;
+    }
+    uint8_t buf[ESCFG_TOTAL_LEN];
+    if (esp_partition_read(part, 0, buf, sizeof(buf)) != ESP_OK) {
+        Serial.println("[eyespy] config: partition read FAILED (defaults)");
+        return false;
+    }
+    if (!esCfgDecode(buf, sizeof(buf), &g_cfg)) {
+        Serial.println("[eyespy] config: none/invalid (defaults)");
+        return false;
+    }
+    g_cfgLoaded = true;
+    return true;
+}
 
 // Detection tracking for m5basic_display — always compiled (tiny: ~50 bytes).
 // Updated by mbeDetTrack() which is called from CHECK_DET.
@@ -778,6 +816,28 @@ static void processWifiScan(int n) {
     }
     WiFi.scanDelete();
 
+    // ── Apply the user's configuration BEFORE anything is scored, logged or
+    // displayed (ADR-0001). Clearing a disabled engine's flag here — upstream of
+    // every addScore() and Serial.printf() below — makes "disabled" genuinely
+    // silent, not merely unscored, and does it in one place instead of at each of
+    // the nine WiFi sites. Mirror of the same block in processBLE().
+    {
+        struct { bool* flag; uint32_t bit; } eng[] = {
+            { &fFlockOui,       ES_ENG_FLOCK_OUI      },
+            { &fFlockMfrOui,    ES_ENG_FLOCK_MFR_OUI  },
+            { &fSoundthinking,  ES_ENG_SOUNDTHINKING  },
+            { &fAlprOui,        ES_ENG_ALPR_OUI       },
+            { &fFlockSsid,      ES_ENG_FLOCK_SSID     },
+            { &fAlprSsid,       ES_ENG_ALPR_SSID      },
+            { &fCamOui,         ES_ENG_CAM_OUI        },
+            { &fCamSsid,        ES_ENG_CAM_SSID       },
+            { &fFwDefaultMac,   ES_ENG_FW_DEFAULT_MAC },
+        };
+        for (size_t i = 0; i < sizeof(eng)/sizeof(eng[0]); i++) {
+            if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, eng[i].bit)) *eng[i].flag = false;
+        }
+    }
+
     if (fFlockOui)     addScore(PTS_FLOCK_OUI,     now, &g_flockOuiScored,     "Flock-cam-OUI");
     if (fFlockMfrOui)  addScore(PTS_FLOCK_MFR_OUI, now, &g_flockMfrOuiScored,  "Flock-mfr-OUI");
     if (fSoundthinking)addScore(PTS_SOUNDTHINKING,  now, &g_soundthinkingScored,"SoundThinking");
@@ -802,6 +862,28 @@ static void startWifiPromisc() {
 // the rest of the scoring engine it drives.
 static void processBLE() {
     unsigned long now = millis();
+
+    // ── Apply the user's configuration BEFORE anything is scored, logged or
+    // displayed (ADR-0001). Clearing a disabled engine's pending flag here — in
+    // one place, upstream of CHECK_DET/CHECK_TRACKER — is what makes "disabled"
+    // mean genuinely silent: no score, no serial line, no on-screen entry and no
+    // dashboard record, rather than merely no score. Gating inside each engine
+    // would be 15 separate chances to miss one.
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_AXON))        g_axonDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_RAYBAN))      g_raybanDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_FLOCK_BLE_NAME)) g_flockBleDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_FLOCK_BLE_MFR))  g_flockBleMfrDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_RAVEN_BLE))   g_ravenBleDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_FLOCK_GATT))  g_flockGattDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_SKIMMER))     g_skimmerDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_AIRTAG))      g_airtagDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_ODID_BLE))    g_odidBleDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_ODID_WIFI))   g_odidWifiDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_SMARTTAG))    g_smarttagDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_TILE))        g_tileDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_MESHCORE))    g_meshcoreDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_IBEACON))     g_ibeaconDet = false;
+    if (!esCfgEngineOn(&g_cfg, g_cfgLoaded, ES_ENG_PERSIST))     g_persistDet = false;
 
     CHECK_DET(axon,        PTS_AXON,         "Axon-cam");
     CHECK_DET(rayban,      PTS_RAYBAN,       "RayBan-Meta");
@@ -888,12 +970,24 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.println("[eyespy] Eye Spy v1.3 starting");
+    // Load the user configuration FIRST (ADR-0001) — before display/audio init and
+    // before either radio starts, so the first screen and the startup tones honour
+    // the user's choices, and so the UI task can read these without a lock.
+    esConfigLoad();
     // schema= identifies the serial log format this unit emits (ADR-0002,
     // docs/adr/0002-log-schema-versioning.md). It is printed in the banner so a
     // unit's format can be identified from a pasted boot log before any
     // detection has occurred — the dashboard's parser is pattern-based, so a
     // format change makes lines vanish silently rather than erroring.
     Serial.printf("[eyespy] log schema=%d\n", ES_LOG_SCHEMA);
+    // Report whether a user configuration was applied, so support can tell "the
+    // user dialled this down in the flasher" from "the firmware never saw it".
+    Serial.printf("[eyespy] config=%s min_score=%u ble_floor=%d tracker_min=%u engines=0x%08lx\n",
+                  g_cfgLoaded ? "USER" : "defaults",
+                  (unsigned)esCfgMinScore(&g_cfg, g_cfgLoaded),
+                  (int)esCfgRssiFloor(&g_cfg, g_cfgLoaded),
+                  (unsigned)esCfgTrackerMin(&g_cfg, g_cfgLoaded),
+                  (unsigned long)esCfgEngines(&g_cfg, g_cfgLoaded));
 
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
     c5DisplayInit();

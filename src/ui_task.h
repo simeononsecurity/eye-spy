@@ -64,6 +64,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "activity_counts.h"   // decaying alert/caution tally for the screen
+#include "es_config.h"         // user configuration (output + threshold gating)
 
 // ── Snapshot published by the scanning side, consumed by the UI task ─────────
 struct UiSnapshot {
@@ -161,14 +162,24 @@ static void uiTaskFn(void* pv) {
         snap = g_uiSnap;
         portEXIT_CRITICAL(&g_uiMux);
 
-        int level = (snap.score >= SCORE_ALERT)   ? 2 :
-                    (snap.score >= SCORE_CAUTION) ? 1 : 0;
+        // The alert threshold is user-configurable (ADR-0001): the configured
+        // minimum score can only be >= SCORE_ALERT, so it can make the device
+        // quieter but never lift a +5-tier signal into alerting on its own. The
+        // floor is enforced when the config is decoded, not here — see
+        // ESCFG_MIN_MIN_SCORE in es_config.h.
+        const uint8_t alertMin = esCfgMinScore(&g_cfg, g_cfgLoaded);
+        int level = (snap.score >= alertMin)          ? 2 :
+                    (snap.score >= SCORE_CAUTION)     ? 1 : 0;
         if (!activityInited) { activityCountsInit(&activity, now); activityInited = true; }
         if (level > prevLevel) {
-            audioAlert(level >= 2);
-            // Count the episode on the same rising edge that fires the chime, so
-            // the tally on screen can never disagree with what was heard. Only a
-            // rise is counted — a device parked at ALERT stays one alert.
+            // Only chime when the user wants audible alerts AND the level change
+            // produced one. The tally is still recorded so the on-screen counts
+            // keep reflecting reality, but the *sound* is an output the user owns.
+            if (esCfgOutputEnabled(&g_cfg, g_cfgLoaded, ESCFG_FLAG_CHIRP)) {
+                audioAlert(level >= 2);
+            }
+            // Count the episode on the same rising edge that (would) fire the
+            // chime, so the tally on screen can never disagree with the level.
             activityCountsNote(&activity, level, now);
         }
         prevLevel = level;
@@ -176,11 +187,21 @@ static void uiTaskFn(void* pv) {
         // recent activity rather than everything since boot.
         activityCountsDecay(&activity, now);
 
+        // Visual alert LED. Gated separately from the chime: they are independent
+        // outputs and a user may want one without the other. When the LED is
+        // disabled we still drive it to the CLEAR colour rather than leaving it
+        // in its last alert state — a device showing red forever because its
+        // alerts are switched off would look broken.
+        const bool ledOn = esCfgOutputEnabled(&g_cfg, g_cfgLoaded, ESCFG_FLAG_LED);
         if (level >= 2) {
-            bool on = ((now / ALERT_FLASH_HALF_MS) & 1) == 0;
-            setLED(on ? 220 : 0, 0, 0);
+            if (ledOn) {
+                bool on = ((now / ALERT_FLASH_HALF_MS) & 1) == 0;
+                setLED(on ? 220 : 0, 0, 0);
+            } else {
+                setLED(0, 0, 0);
+            }
         } else if (level == 1) {
-            setLED(180, 60, 0);
+            setLED(ledOn ? 180 : 0, ledOn ? 60 : 0, 0);
         } else {
             setLED(0, 80, 0);
         }
@@ -207,7 +228,15 @@ static void uiTaskFn(void* pv) {
             // m5basicButtonTick() already — nothing for the scan side to do.
         }
 #if defined(USE_M5CORE2_AWS)
-        m5basicVibrationTick();
+        // Honour the user's VIBRATE choice (ADR-0001). m5basicVibrationTick()
+        // only steps a pattern that the alert screen armed, so gating here is
+        // enough to silence the motor — and it cannot block, which is why this is
+        // a tick rather than a delay.
+        if (esCfgOutputEnabled(&g_cfg, g_cfgLoaded, ESCFG_FLAG_VIBRATE)) {
+            m5basicVibrationTick();
+        } else {
+            m5basicVibrationStop();
+        }
 #endif
 #endif
 #if defined(USE_M5STICKC_PLUS_SE)

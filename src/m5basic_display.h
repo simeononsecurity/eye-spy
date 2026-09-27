@@ -31,6 +31,11 @@
 #include <cstdio>
 #include <cmath>
 #include "alert_hold.h"   // shared critical-alert hold state machine
+// Self-contained include of the user configuration: this header consults it to
+// gate the vibration motor, and depending on main.cpp's include order for that
+// would be a latent ordering bug (it compiled only because of ordering once
+// already).
+#include "es_config.h"
 
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
@@ -112,6 +117,11 @@ static uint8_t       mbe_vibPattern  = 0;      // 0=idle 1=alert(2x strong) 2=ca
 static uint8_t       mbe_vibStep     = 0;      // pulse index within the pattern
 static bool          mbe_vibOn       = false;  // true while motor is currently energised
 static unsigned long mbe_vibNextMs   = 0;      // millis() timestamp of next state change
+
+// Defined with the tick further down; declared here because the alert screen
+// needs it when the user has disabled vibration and an armed pattern must be
+// cancelled rather than stepped.
+static void m5basicVibrationStop();
 #endif
 
 // ── Serial-mirror log strip ───────────────────────────────────────────────────
@@ -402,7 +412,14 @@ static void m5basicInit() {
     // M5Unified's internal touch-button height defaults to 0 and touches in
     // the [A][B][C] bar never register as button presses at all.
 #if defined(USE_M5CORE2_AWS)
-    for(int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
+    // The startup pulses confirm the motor works, but a user who turned vibration
+    // OFF in the flasher should not be buzzed on every boot — the config is
+    // loaded at the top of setup() precisely so this can honour it.
+    // M5.setTouchButtonHeight() is unrelated to the motor and must always run, or
+    // the touchscreen [A][B][C] bar stops registering taps entirely.
+    if (esCfgOutputEnabled(&g_cfg, g_cfgLoaded, ESCFG_FLAG_VIBRATE)) {
+        for(int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
+    }
     M5.setTouchButtonHeight(MBE_BTN_H);
 #endif
 
@@ -722,10 +739,18 @@ static void m5basicUpdate(int score, const char* lastDet, const char* lastMac,
 #if defined(USE_M5CORE2_AWS)
     {
         static int mbe_prevScore = 0;
-        if (score >= 6 && mbe_prevScore < 6) {
-            mbe_vibPattern = 1; mbe_vibStep = 0; mbe_vibOn = false; mbe_vibNextMs = millis();
-        } else if (score >= 3 && mbe_prevScore < 3) {
-            mbe_vibPattern = 2; mbe_vibStep = 0; mbe_vibOn = false; mbe_vibNextMs = millis();
+        // Only arm when the user wants vibration; otherwise cancel anything
+        // already armed. Simply skipping the tick would leave the motor energised
+        // if a pulse were in flight — a stuck vibrator, the same defect class as
+        // the stuck-red LEDs this project has fixed three times.
+        if (esCfgOutputEnabled(&g_cfg, g_cfgLoaded, ESCFG_FLAG_VIBRATE)) {
+            if (score >= 6 && mbe_prevScore < 6) {
+                mbe_vibPattern = 1; mbe_vibStep = 0; mbe_vibOn = false; mbe_vibNextMs = millis();
+            } else if (score >= 3 && mbe_prevScore < 3) {
+                mbe_vibPattern = 2; mbe_vibStep = 0; mbe_vibOn = false; mbe_vibNextMs = millis();
+            }
+        } else {
+            m5basicVibrationStop();
         }
         mbe_prevScore = score;
     }
@@ -758,6 +783,21 @@ static int m5basicButtonTick() {
 // Call every loop() iteration (Core2 only). Steps the vibration pattern set
 // by m5basicUpdate() using millis()-based timing instead of delay(), so the
 // rest of loop() (buttons, screen, BLE/WiFi) never blocks.
+// Call every loop() iteration (Core2 only). Steps the vibration pattern set by
+// the alert screen using millis()-based timing instead of delay(), so the rest of
+// loop() (buttons, screen, WiFi/BLE phases) never blocks.
+//
+// When the user has disabled vibration, the caller uses m5basicVibrationStop()
+// instead. That is NOT the same as simply not calling this: this function is what
+// turns the motor OFF at the end of a pulse, so skipping it mid-pulse would leave
+// the motor running indefinitely.
+static void m5basicVibrationStop() {
+    mbe_vibPattern = 0;
+    mbe_vibStep    = 0;
+    mbe_vibOn      = false;
+    M5.Power.setVibration(0);
+}
+
 static void m5basicVibrationTick() {
     if (mbe_vibPattern == 0) return;
     unsigned long now = millis();

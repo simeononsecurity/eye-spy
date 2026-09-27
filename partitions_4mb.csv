@@ -3,4 +3,11 @@ nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xe000,  0x2000,
 app0,     app,  ota_0,   0x10000, 0x1F0000,
 app1,     app,  ota_1,   0x200000,0x1F0000,
-spiffs,   data, spiffs,  0x3F0000,0x10000,
+spiffs,   data, spiffs,  0x3F0000,0xF000,
+# User configuration written by the web flasher (ADR-0001): magic/version/CRC32
+# wrapped struct, see src/es_config.h. The 4 KB comes out of spiffs (0x10000 ->
+# 0xF000), which this firmware does not use: Eye Spy persists nothing on-device,
+# so nothing is lost. nvs / otadata / app0 / app1 offsets are UNCHANGED, so
+# existing OTA slots stay valid. A device flashed without this partition, or with
+# it erased, reads "no user config" and uses the compile-time defaults.
+escfg,    data, 0x40,    0x3FF000,0x1000,

@@ -458,7 +458,14 @@ static inline void trackerFollowReset(TrackerFollowState& f) {
 // qualifies as "following". Resets the window when the gap since the previous
 // sighting exceeds TRACKER_CONTINUITY_MAX_GAP_MS, so an unrelated tracker
 // appearing hours later cannot inherit the earlier window's elapsed time.
-static inline bool trackerFollowUpdate(TrackerFollowState& f, uint32_t now) {
+//
+// followMs defaults to the compile-time window so existing callers (and tests)
+// are unaffected; the firmware passes the user's configured value from the
+// web-flasher config (ADR-0001). Keeping it a PARAMETER rather than reading the
+// config here preserves this header's purity — it stays host-testable with no
+// Arduino/ESP-IDF dependency.
+static inline bool trackerFollowUpdate(TrackerFollowState& f, uint32_t now,
+                                       uint32_t followMs = TRACKER_FOLLOW_MS) {
     // Unsigned subtraction, so this stays correct across the ~49-day millis()
     // wrap: a wrap looks like a small elapsed value, not a huge negative one.
     if (f.lastSeen != 0 && (uint32_t)(now - f.lastSeen) > TRACKER_CONTINUITY_MAX_GAP_MS) {
@@ -468,7 +475,7 @@ static inline bool trackerFollowUpdate(TrackerFollowState& f, uint32_t now) {
     f.lastSeen = now;
     if (f.hits < 0xFFFF) f.hits++;
     if (!f.following && f.hits >= TRACKER_FOLLOW_MIN_HITS &&
-        (uint32_t)(now - f.firstSeen) >= TRACKER_FOLLOW_MS) {
+        (uint32_t)(now - f.firstSeen) >= followMs) {
         f.following = true;
     }
     return f.following;

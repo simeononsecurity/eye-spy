@@ -214,8 +214,12 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
     if (g_##name##Det) { \
         g_##name##Det = false; \
         g_##name##Count++; \
-        bool          _following = trackerFollowUpdate(followState, now); \
+        /* User-configured following window (ADR-0001), read at the expansion */ \
+        /* point in main.cpp so es_detect.h stays dependency-free. */ \
+        const uint32_t _needMs = (uint32_t)esCfgTrackerMin(&g_cfg, g_cfgLoaded) * 60000UL; \
+        bool          _following = trackerFollowUpdate(followState, now, _needMs); \
         unsigned long _mins      = trackerFollowMinutes(followState, now); \
+        unsigned long _needMin   = _needMs / 60000UL; \
         bool          _isNewWindow = (followState.hits == 1); \
         if (_isNewWindow) g_##name##Scored = 0;   /* a fresh follow must re-qualify */ \
         bool _transition = _following && (g_##name##Scored == 0); \
@@ -227,7 +231,7 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
             Serial.printf("[eyespy] " tag "  RSSI=%d  #%u  %s (%lumin/%lumin)\n", \
                           (int)g_##name##Rssi, (unsigned)g_##name##Count, \
                           _following ? "FOLLOWING" : "watching", \
-                          _mins, TRACKER_FOLLOW_MS / 60000UL); \
+                          _mins, _needMin); \
             if (_following) \
                 IF_M5BASIC_LOG(tag "-FOLLOW", (int)g_##name##Rssi, (unsigned)g_##name##Count); \
             else \
