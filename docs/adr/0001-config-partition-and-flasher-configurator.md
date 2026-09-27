@@ -1,9 +1,6 @@
 # ADR-0001: Runtime config partition and web-flasher configurator
 
-**Status:** Accepted — firmware side implemented; the web-flasher UI that writes
-the blob is still to come (the firmware defaults preserve current behaviour in the
-meantime, so there is no half-applied state: with no blob present the device
-behaves exactly as before)
+**Status:** Accepted — implemented (firmware + web flasher)
 **Date:** 2026-09-19
 **Supersedes:** none
 

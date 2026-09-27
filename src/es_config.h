@@ -33,10 +33,16 @@
 #define ESCFG_FLAG_LED     (1u << 0)   // status LED / screen flashes
 #define ESCFG_FLAG_CHIRP   (1u << 1)   // audible alerts (speaker or buzzer)
 #define ESCFG_FLAG_VIBRATE (1u << 2)   // vibration motor (Core2 For AWS only)
-#define ESCFG_FLAG_HOLD    (1u << 3)   // hold a critical alert on the display
+// Bit 3 is RESERVED — NOT YET IMPLEMENTED. A "hold the alert on screen" toggle is
+// the obvious next addition (the 15-second hold already exists in
+// alert_hold.h, it just is not configurable), but it is not wired here, so the
+// flasher does not offer it and it is excluded from the output mask. A switch that
+// does nothing is worse than no switch — the same reasoning that removed the
+// "Total events" counter earlier.
+#define ESCFG_FLAG_HOLD_RESERVED (1u << 3)
 // bits 4..15 reserved
 #define ESCFG_FLAG_ALL_OUTPUTS (ESCFG_FLAG_LED | ESCFG_FLAG_CHIRP | \
-                                ESCFG_FLAG_VIBRATE | ESCFG_FLAG_HOLD)
+                                ESCFG_FLAG_VIBRATE)
 
 // Defaults = today's behaviour, single source of truth. The config layer may
 // only OVERRIDE these, never redefine them, so there is no second copy to drift.

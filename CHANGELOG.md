@@ -51,7 +51,14 @@ customers were told.
 - **Printable guides** (4×6 card + 8.5×11 sheet) and
   [`docs/customer-replies.md`](docs/customer-replies.md) — ready-made answers to
   the questions that actually come back from the field.
-- Native host test suite (94 cases) covering the detection tables, the tracker
+- **Web-flasher configurator** (ADR-0001): before flashing, choose which
+  detections this device watches for (13 user-facing groups covering all 24
+  engines), which of its own outputs it uses (light, sound, vibration — only the
+  ones the selected board actually has), and three bounded sensitivity settings
+  (how sure before it alerts, Bluetooth proximity floor, and how long a tracker
+  must follow you). Everything defaults to the current behaviour, so leaving it
+  alone changes nothing.
+- Native host test suite (113 cases) covering the detection tables, the tracker
   gate, the alert hold and the activity tallies.
 
 ### Changed
