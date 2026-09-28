@@ -148,6 +148,42 @@ this workflow before considering any firmware change complete.
    change: check whether any file was compiled (`grep -c Compiling <log>`
    returns 0) before attributing a break to source.
 
+12. **The web flasher's inline script is code — check it like code.** `docs/index.html`
+   is one large inline `<script>`, and nothing in the build touches it, so a broken
+   configurator ships silently. Two bug classes actually got through this way (in the
+   sibling flock-you-esp32 project, and the same checks caught the second one here):
+
+   - **A block of new code inserted inside an unrelated function.** 137 lines of
+     config code landed inside `tryOpenPort()`, so its functions were scoped there:
+     the board-select handler threw `ReferenceError` and the config checkbox did
+     nothing until the user opened the serial monitor. Nothing fails the build, and
+     the script still parses.
+   - **Capability lookups keyed on the wrong string.** `BOARD_CAPS` was keyed on the
+     *build* name while lookups used the *manifest* name, so every `-ble` board — the
+     default for most — reported "no outputs available" and offered no toggles at all.
+     `boardIdFromManifest()` now strips `-ble`/`-selftest`/`-beacon` in a loop.
+
+   Four cheap checks, all doable in Node with a ~20-line stub DOM
+   (`document.getElementById` returning per-id stubs that record `addEventListener`
+   handlers):
+
+   - **Parse**: `new Function(script)` per inline block — catches real syntax errors.
+   - **Top-level placement**: assert `renderConfig` / `applyManifest` / `cfgFromUi`
+     are `typeof … === 'function'` *at top level*, and that the `change` listener is
+     attached to `#step3` after load. A nested declaration is undefined from the top
+     level, so this is the check that catches the nesting mistake above.
+   - **Interaction**: dispatch a synthetic `change` on `#cfg-custom`, assert
+     `#cfg-body.style.display` becomes `block`, then call `renderConfig()` and assert
+     the engine rows, output rows and all three selects are non-empty.
+   - **Capability coverage**: iterate every `manifest-*.json` named anywhere in the
+     page, resolve each through `boardIdFromManifest()` + `BOARD_CAPS`, and fail on any
+     that yields no entry — plus assert the engine bits are unique and < 32, because
+     those indices are a wire contract with `ES_ENG_*` in `src/es_config.h`.
+
+   Keep the blob builder cross-checked against the C codec as well: extract the JS,
+   emit a blob under Node, decode it with a host program that includes the real header,
+   and compare CRCs (standard check value for `"123456789"` is `0xCBF43926`).
+
 ## Before committing
 
 - Re-run `git status`/`git diff --stat` and confirm every changed file is
