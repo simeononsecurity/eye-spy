@@ -252,20 +252,58 @@ Dependencies (installed automatically by PlatformIO):
 All output is prefixed with `[eyespy]`:
 
 ```
-[eyespy] Eye Spy v1.1 starting
-[eyespy] init OK
+[eyespy] boot: reset=POWERON (cold boot / power cycle)
+[eyespy] boot: heap=214880 min_heap=201336
+[eyespy] Eye Spy v1.3 starting
+[eyespy] slog ready: 511 slots, 0 stored, 0 lost
+[eyespy] log schema=1
+[eyespy] init OK  flock_ouis=35  mfr_ouis=7  st_ouis=1
 [eyespy] BLE scan start
-[eyespy] WiFi scan
 [eyespy] Flock-cam OUI d4:bb:e6  "Flock_CAM_0032"
 [eyespy] +5 (Flock-cam-OUI)  score=5
-[eyespy] WiFi done  score=5
-[eyespy] promisc ON
-[eyespy] status  score=5  CAUTION  phase=PROMISC  tracked=12
-[eyespy] Axon-cam  RSSI=-62
+[eyespy] Axon-cam  RSSI=-62  #1
 [eyespy] +5 (Axon-cam)  score=10
-[eyespy] status  score=10  ALERT  phase=BLE  tracked=12
+[eyespy] status  score=10  ALERT  phase=BLE  tracked=12  events=4  heap=213912 min_heap=201336  log=3 lost=0
 [eyespy] decay  score=9
 ```
+
+`reset=` is why the device last restarted (anything other than a cold boot is
+suffixed `<-- investigate`), and `heap=`/`min_heap=` are the leak tell — a floor
+that keeps falling across a run is the usual cause of a reboot that looks like it
+arrives on a timer. `log=`/`lost=` report the on-device detection log below.
+
+### Reading the log back: `dumplog` / `clearlog`
+
+The firmware keeps the last ~511 scored detections in a 64 KB `eslog` partition
+that **survives a reboot** — so a unit that crashed, or that ran unattended, can
+still be diagnosed afterwards. Two plain-text commands (press ENTER after each)
+read and clear it:
+
+```
+dumplog      # stream the stored records, oldest first
+clearlog     # empty the ring
+```
+
+A dump looks like this — each record is preceded by the device uptime when it was
+written, and the records themselves are byte-identical to the lines printed live,
+so the output can be piped straight into `api/eyespy.py` as a replay:
+
+```
+[eyespy] slog dump begin count=3 total=3 lost=0 dropped=0
+[eyespy] slog t=12s
+[eyespy] slog boot reset=POWERON (cold boot / power cycle)
+[eyespy] slog t=184s
+[eyespy] +5 (Flock-cam-OUI)  score=5
+[eyespy] slog t=190s
+[eyespy] +5 (Axon-cam)  score=10
+[eyespy] slog dump end
+```
+
+Writes are buffered and flushed from the main loop, so a crash or power cut costs
+at most the last second or two; `lost=` counts records overwritten once the ring
+wraps, and `dropped=` counts records refused (a line too long for a slot is
+rejected rather than truncated, so nothing in a dump can be a half-written line
+that no longer parses).
 
 ---
 
@@ -292,10 +330,14 @@ project:
 
 ```bash
 cd eye-spy
-pio test -e native                              # run all 67 tests
+pio test -e native                              # run all 128 tests
 pio test -e native -f test_oui_matching          # OUI table + firmware-default MAC matching (20)
 pio test -e native -f test_ssid_ble_matching     # SSID / BLE-name / GATT / Raven-range matching (32)
 pio test -e native -f test_tracker_follow        # AirTag / SmartTag / Tile following gate (15)
+pio test -e native -f test_activity_counts       # decaying alert/caution tallies (12)
+pio test -e native -f test_alert_hold            # 15-second critical-alert hold (15)
+pio test -e native -f test_config                # web-flasher config blob codec (19)
+pio test -e native -f test_es_log                # on-device log framing + ring (15)
 ```
 
 All **67 tests pass** against the current `es_detect.h`. The test suite covers:

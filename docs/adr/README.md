@@ -14,3 +14,4 @@ record is how you learn why the first answer stopped being right.
 |-----|-------|--------|
 | [0001](0001-config-partition-and-flasher-configurator.md) | Runtime config partition + web-flasher configurator | Proposed |
 | [0002](0002-log-schema-versioning.md) | Version the serial log format | Accepted |
+| [0003](0003-on-device-detection-log.md) | On-device detection log (crash-resilient and retrievable) | Accepted |

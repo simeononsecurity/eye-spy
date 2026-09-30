@@ -16,6 +16,29 @@ customers were told.
 
 ### Added
 
+- **On-device detection log with a serial dump** (ADR-0003). Until now the
+  firmware persisted nothing: a crash, a power cut or a reset erased every
+  detection, and when a unit runs standalone that history is the only record that
+  exists. A new 64 KB `eslog` partition now keeps a ring of the last ~511 scored
+  detections, and two serial commands get them back:
+  - `dumplog` streams the stored records oldest-first, each preceded by its
+    uptime, so a unit that crashed while unattended can be diagnosed afterwards.
+  - `clearlog` empties the ring.
+  The stored bytes are the **same lines the device already prints** — the ones
+  `api/eyespy.py` parses — so a dump can be piped straight into the dashboard as
+  a replay, with no new format and no API change. A boot record is written at
+  startup, so reboots appear as boundaries in the log.
+  - Writes are buffered (~1 KB) and flushed from `loop()`; flash timing never
+    reaches the detection path, so a crash costs at most the unflushed buffer.
+  - Each record sits in a fixed 128-byte slot with its own magic byte, length and
+    CRC-16, so a torn write invalidates exactly one record instead of corrupting
+    the ring. Over-long lines are refused (counted as `dropped=`) rather than
+    truncated, because a cut-off line may no longer parse back into a detection.
+  - `log=` and `lost=` appear on the periodic status line so support can tell "the
+    log is running" from "it has been recycling for a week".
+  - Space came from shrinking `app1` (`0x1F0000 → 0x1E0000`); every other offset
+    is untouched, in particular `escfg` at `0x3FF000` and `spiffs`/`coredump`.
+
 - **Audible alerts on the boards that have a speaker.** The M5Stack Basic and
   Core2 For AWS builds had `USE_M5_SPEAKER 0`, so `audioAlert()` compiled down to
   a no-op — no sound was possible no matter how close a threat was. Three

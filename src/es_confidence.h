@@ -41,6 +41,30 @@
 #include <cstdint>
 #include <cstring>
 #include "es_detect.h"   // TrackerFollowState + the tracker follow gate
+#include "es_log.h"      // on-device detection log (ADR-0003)
+
+// ── Detection line emission ──────────────────────────────────────────────────
+// Every scored detection line is built ONCE, printed, and handed to the
+// on-device log. Building it once is what guarantees the stored record and the
+// live line cannot drift apart — the log is only useful if a dump replays
+// through api/eyespy.py exactly like the live stream did.
+//
+// The printed bytes are unchanged from the original `Serial.printf(fmt "\n", ...)`
+// form: `Serial.printf("%s\n", buf)` emits the same characters, deliberately, so
+// ADR-0002's schema is untouched.
+//
+// The buffer is checked for truncation rather than trusted: a line that does not
+// fit is printed but NOT stored (and counted as a drop), because a cut-off line
+// could stop matching an API pattern and silently corrupt a replay.
+#define ES_EMIT_LOG(fmt, ...) do {                                  \
+    char _esl[ESL_TEXT_MAX + 2];                                    \
+    int _eslN = snprintf(_esl, sizeof(_esl), fmt, ##__VA_ARGS__);    \
+    if (_eslN > 0) {                                                \
+        Serial.printf("%s\n", _esl);                                \
+        if (_eslN < (int)sizeof(_esl)) esLogNote(_esl);              \
+        else                           esLogRefused();               \
+    }                                                               \
+  } while (0)
 
 // ── Timing / thresholds ──────────────────────────────────────────────────────
 #define SCORE_DECAY_INTERVAL  60000UL
@@ -175,7 +199,7 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
     if (now - *ts < DETECTION_RESCORE_MS) return;
     *ts = now;
     g_score += pts;
-    Serial.printf("[eyespy] +%d (%s)  score=%d\n", pts, tag, g_score);
+    ES_EMIT_LOG("[eyespy] +%d (%s)  score=%d", pts, tag, g_score);
 }
 
 // Fires once per still-active detector flag: logs, updates the m5basic
@@ -189,8 +213,8 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
         mbeDetTrack(tag, (int8_t)g_##name##Rssi); \
         if (g_##name##Count == 1 || now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
             g_##name##LoggedAt = now; \
-            Serial.printf("[eyespy] " tag "  RSSI=%d  #%u\n", \
-                          (int)g_##name##Rssi, (unsigned)g_##name##Count); \
+            ES_EMIT_LOG("[eyespy] " tag "  RSSI=%d  #%u", \
+                        (int)g_##name##Rssi, (unsigned)g_##name##Count); \
             IF_M5BASIC_LOG(tag, (int)g_##name##Rssi, (unsigned)g_##name##Count); \
         } \
         addScore(pts, now, &g_##name##Scored, tag); \
@@ -228,10 +252,10 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
         if (g_##name##Count == 1 || _transition || \
             now - g_##name##LoggedAt >= DETECTION_RESCORE_MS) { \
             g_##name##LoggedAt = now; \
-            Serial.printf("[eyespy] " tag "  RSSI=%d  #%u  %s (%lumin/%lumin)\n", \
-                          (int)g_##name##Rssi, (unsigned)g_##name##Count, \
-                          _following ? "FOLLOWING" : "watching", \
-                          _mins, _needMin); \
+            ES_EMIT_LOG("[eyespy] " tag "  RSSI=%d  #%u  %s (%lumin/%lumin)", \
+                        (int)g_##name##Rssi, (unsigned)g_##name##Count, \
+                        _following ? "FOLLOWING" : "watching", \
+                        _mins, _needMin); \
             if (_following) \
                 IF_M5BASIC_LOG(tag "-FOLLOW", (int)g_##name##Rssi, (unsigned)g_##name##Count); \
             else \
@@ -240,8 +264,8 @@ static void addScore(int pts, unsigned long now, unsigned long* ts, const char* 
         if (_transition) { \
             g_##name##Scored = now; \
             g_score += pts; \
-            Serial.printf("[eyespy] +%d (" tag " FOLLOWING %lumin)  score=%d\n", \
-                          pts, _mins, g_score); \
+            ES_EMIT_LOG("[eyespy] +%d (" tag " FOLLOWING %lumin)  score=%d", \
+                        pts, _mins, g_score); \
         } \
     }
 

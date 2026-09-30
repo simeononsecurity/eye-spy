@@ -947,10 +947,11 @@ static void printStatus() {
     // appears to arrive on a timer. min_heap is the low-water mark, so it only
     // ever falls — which is what makes a slow leak visible in a log someone is
     // already capturing.
-    Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d  events=%lu  heap=%u min_heap=%u\n",
+    Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d  events=%lu  heap=%u min_heap=%u  log=%lu lost=%lu\n",
                   g_score, st, ph, (int)g_trackedCount,
                   (unsigned long)g_mbeTotalEvents,
-                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+                  (unsigned long)esLogStored(), (unsigned long)esLogLost());
 #if defined(USE_M5BASIC)
     {
         // Deliberately does NOT include events=: the on-screen strip truncates
@@ -1012,6 +1013,20 @@ void setup() {
     Serial.printf("[eyespy] boot: heap=%u min_heap=%u\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
     Serial.println("[eyespy] Eye Spy v1.3 starting");
+    // On-device detection log (ADR-0003). Initialised here, before the radios and
+    // before any detection can fire, so nothing is missed; the ring deliberately
+    // survives a reboot, which is what makes a crash diagnosable after the fact.
+    esLogInit();
+    {
+        // Boot record: a reboot then shows up as a boundary inside a dump rather
+        // than as an unexplained gap. Flushed immediately, because the interesting
+        // case is a unit that dies shortly after starting.
+        char boot[ESL_TEXT_MAX + 1];
+        snprintf(boot, sizeof(boot), "[eyespy] slog boot reset=%s",
+                 esResetReasonName(esp_reset_reason()));
+        esLogNote(boot);
+        esLogTick();
+    }
     // Load the user configuration FIRST (ADR-0001) — before display/audio init and
     // before either radio starts, so the first screen and the startup tones honour
     // the user's choices, and so the UI task can read these without a lock.
@@ -1194,9 +1209,57 @@ void setup() {
 }
 
 
+// ─── Serial commands ─────────────────────────────────────────────────────────
+// The firmware's only inbound serial interface, added because ADR-0003 requires a
+// way to get the on-device log OFF the device: flock-you-esp32 persists sessions
+// but has no command interface, which makes its storage write-only and useless for
+// post-mortem diagnosis — the trap this deliberately avoids.
+//
+// Deliberately minimal: two commands, no arguments, bounded line length, and
+// loop context only (never an ISR or a NimBLE callback). Unknown input is
+// ignored, because this stream is predominantly *output* and must stay robust.
+static char   g_cmdBuf[24];
+static size_t g_cmdLen = 0;
+
+static void serviceSerialCommands() {
+    while (Serial.available()) {
+        int ci = Serial.read();
+        if (ci < 0) break;
+        char c = (char)ci;
+        if (c == '\r' || c == '\n') {
+            if (g_cmdLen) {
+                g_cmdBuf[g_cmdLen] = '\0';
+                if (strcmp(g_cmdBuf, "dumplog") == 0) {
+                    esLogDump(Serial);
+                } else if (strcmp(g_cmdBuf, "clearlog") == 0) {
+                    esLogClear();
+                    Serial.println("[eyespy] slog cleared");
+                }
+                // Anything else is silently ignored on purpose: a stray newline
+                // or a pasted log line must not be acted on.
+                g_cmdLen = 0;
+            }
+            continue;
+        }
+        if (g_cmdLen < sizeof(g_cmdBuf) - 1) {
+            g_cmdBuf[g_cmdLen++] = c;
+        } else {
+            // Over-long input: discard the whole line rather than acting on a
+            // truncated prefix (which could otherwise match a command).
+            g_cmdLen = 0;
+        }
+    }
+}
+
 // ─── loop() ──────────────────────────────────────────────────────────────────
 void loop() {
     unsigned long now = millis();
+
+    // On-device log housekeeping every iteration: `serviceSerialCommands()` picks
+    // up dumplog/clearlog, and `esLogTick()` flushes buffered records to flash
+    // off the detection path (it no-ops when the buffer is empty).
+    serviceSerialCommands();
+    esLogTick();
 
     if (g_state == STATE_STARTUP && now - g_startupMs >= STARTUP_DURATION_MS) {
         g_state = STATE_NORMAL;

@@ -2,7 +2,18 @@
 nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xe000,  0x2000,
 app0,     app,  ota_0,   0x10000, 0x1F0000,
-app1,     app,  ota_1,   0x200000,0x1F0000,
+app1,     app,  ota_1,   0x200000,0x1E0000,
+# On-device detection log (ADR-0003): raw, self-validating fixed slots, see
+# src/es_log.h. The space comes from SHRINKING app1 (0x1F0000 -> 0x1E0000) so
+# that every other partition keeps its existing offset — in particular escfg
+# stays at 0x3FF000, which the web flasher's config-part URL depends on.
+#
+# The OTA slots are now asymmetric (app0 0x1F0000, app1 0x1E0000). That is safe
+# for this firmware because it has no OTA path at all, and the binding
+# constraint is the SMALLER slot: 0x1E0000 = 1920 KB against a largest image of
+# ~1170 KB. Do not "tidy" this by moving app1's offset — that would relocate
+# spiffs/coredump/escfg too.
+eslog,    data, 0x41,    0x3E0000,0x10000,
 spiffs,   data, spiffs,  0x3F0000,0x3000,
 # Crash post-mortem (ESP-IDF coredump). Eye Spy's partition table filled the
 # whole 4 MB, so there was no free space to place this in (unlike flock-you-esp32,
