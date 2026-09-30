@@ -941,9 +941,16 @@ static void printStatus() {
     // because it is genuinely useful when supporting a unit ("it logged N
     // things in M hours"), and at boot/UART it cannot be mistaken for an alert
     // total on a screen.
-    Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d  events=%lu\n",
+    // heap=/min_heap= are on the periodic status line, not only on the boot
+    // line: the boot value cannot distinguish "always was this low" from
+    // "falling steadily", and a leaking heap is the usual cause of a reboot that
+    // appears to arrive on a timer. min_heap is the low-water mark, so it only
+    // ever falls — which is what makes a slow leak visible in a log someone is
+    // already capturing.
+    Serial.printf("[eyespy] status  score=%d  %s  phase=%s  tracked=%d  events=%lu  heap=%u min_heap=%u\n",
                   g_score, st, ph, (int)g_trackedCount,
-                  (unsigned long)g_mbeTotalEvents);
+                  (unsigned long)g_mbeTotalEvents,
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
 #if defined(USE_M5BASIC)
     {
         // Deliberately does NOT include events=: the on-screen strip truncates

@@ -96,6 +96,18 @@ customers were told.
     Any reason other than a cold boot is suffixed `<-- investigate`. A heap floor
     that keeps falling across a run is the signature of a leak, which is the usual
     cause of a reboot that appears to arrive on a timer.
+  - **`heap=`/`min_heap=` are also on the periodic status line**, not just at boot,
+    because the boot value cannot distinguish "always was this low" from "falling
+    steadily". `min_heap` is the low-water mark and so only ever falls, which is
+    what makes a slow leak visible in a log someone is already capturing while a
+    unit runs unattended:
+    ```
+    [eyespy] status  score=10  ALERT  phase=BLE  tracked=3  events=12  heap=214880 min_heap=201336
+    ```
+    Appending fields here is safe, and this one needed checking: the dashboard's
+    `_RE_STATUS` regex *does* parse this line. It is unanchored, so it still
+    matches and still captures the same four fields. Verified by running the real
+    `_RE_*` patterns from `api/eyespy.py` against the extended line.
   - A **`coredump` partition** was added to `partitions_4mb.csv` (48 KB), so a
     panic is written to flash and can be retrieved later with `esptool` — which
     matters for a unit that ran unattended. Eye Spy's partition table already
