@@ -107,6 +107,27 @@ this repository. They mirror the equivalent rules in the sibling
   `M5.Speaker.begin()` gotcha.)
 
 
+- **`sdkconfig.defaults` is INERT in this project — do not expect it to change
+  anything.** This build links the Arduino core's *precompiled* ESP-IDF libraries
+  (`framework-arduinoespressif32-libs`), and their baked-in Kconfig is already
+  fixed at package-install time. A project `sdkconfig.defaults` cannot alter a
+  prebuilt `.a`, and no generated `sdkconfig` appears under `.pio/build/` — so a
+  setting placed there is silently ignored, which reads exactly like a setting
+  that "didn't take" and can burn hours. Verified for ESP32 and ESP32-S3 by
+  inspecting the packaged `tools/sdk/esp32*/sdkconfig`.
+  - This is how a `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y` sat in the repo while the
+    *opposite* was true in the linked binary — the boot log printed
+    `No core dump partition found!` at every boot, which was the correct complaint
+    about a missing **partition**, not a setting. If you need an ESP-IDF build
+    option changed, check whether it is actually taking effect before building a
+    design on top of it.
+  - Corollary for anything boot-time and diagnostic: **print it, don't assume it.**
+    Adding `esp_reset_reason()` + heap to the first lines of `setup()` cost two
+    lines and turned an unactionable "it reboots sometimes" report into something
+    diagnosable; the same reasoning applies to any setting whose effect you cannot
+    observe.
+
+
 ## Reviewing your own changes
 
 Before considering a change complete, re-read the diff and ask:

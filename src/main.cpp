@@ -965,10 +965,45 @@ static void printStatus() {
 // purgeTracked() now lives in es_confidence.h alongside the persistence
 // tracker (TrackedDev/g_tracked/g_trackedCount) it operates on.
 
+// ─── boot diagnostics ────────────────────────────────────────────────────────
+// Why the last reboot happened. A field unit that reboots on its own is not
+// actionable without this: "reboot" covers a firmware panic, a task watchdog
+// reset, a brownout (power), and a deliberate software reset — each with a
+// different remedy. This firmware never issues a software reset, so any reason
+// other than a cold boot deserves investigation.
+//
+// A panic also prints its own backtrace to serial before this runs, and with the
+// coredump partition in partitions_4mb.csv it is now written to flash too, so a
+// unit that crashed while running unattended is still diagnosable afterwards.
+//
+// Serial.print rather than a display call, deliberately: this runs before any
+// display exists so that a hang during init still leaves the reason in a capture.
+static const char* esResetReasonName(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "POWERON (cold boot / power cycle)";
+        case ESP_RST_EXT:       return "EXT (external reset pin)";
+        case ESP_RST_SW:        return "SW (software reset) <-- investigate, none expected";
+        case ESP_RST_PANIC:     return "PANIC (firmware crash) <-- investigate";
+        case ESP_RST_INT_WDT:   return "INT_WDT (interrupt watchdog) <-- investigate";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT (task watchdog) <-- investigate";
+        case ESP_RST_WDT:       return "WDT (other watchdog) <-- investigate";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT (power supply sag) <-- investigate";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "UNKNOWN";
+    }
+}
+
 // ─── setup() ─────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     delay(200);
+    // Boot diagnostics first, so they survive a hang during display/radio init.
+    // min_heap is the low-water mark since boot: a floor that keeps falling across
+    // a run is the signature of a leak behind "it reboots after a while".
+    Serial.printf("[eyespy] boot: reset=%s\n", esResetReasonName(esp_reset_reason()));
+    Serial.printf("[eyespy] boot: heap=%u min_heap=%u\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
     Serial.println("[eyespy] Eye Spy v1.3 starting");
     // Load the user configuration FIRST (ADR-0001) — before display/audio init and
     // before either radio starts, so the first screen and the startup tones honour

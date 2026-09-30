@@ -81,6 +81,40 @@ customers were told.
 
 ### Fixed
 
+- **Crash evidence is no longer discarded.** A field unit reported rebooting on
+  its own and appearing to lose its session. That could not be acted on, because
+  the things "reboot" can mean — a firmware panic, an interrupt/task watchdog, a
+  brownout, a deliberate software reset — each have a different remedy, and this
+  firmware recorded none of them.
+  - The firmware now prints **why it last restarted** and its **heap low-water
+    mark** at every boot, before display/radio init so the reason survives a hang
+    during init:
+    ```
+    [eyespy] boot: reset=POWERON (cold boot / power cycle)
+    [eyespy] boot: heap=214880 min_heap=201336
+    ```
+    Any reason other than a cold boot is suffixed `<-- investigate`. A heap floor
+    that keeps falling across a run is the signature of a leak, which is the usual
+    cause of a reboot that appears to arrive on a timer.
+  - A **`coredump` partition** was added to `partitions_4mb.csv` (48 KB), so a
+    panic is written to flash and can be retrieved later with `esptool` — which
+    matters for a unit that ran unattended. Eye Spy's partition table already
+    filled the whole 4 MB, so the space comes from **shrinking the `spiffs`
+    partition** (`0xF000 → 0x3000`). That is lossless here because this firmware
+    never mounts SPIFFS — the partition is vestigial (verified: no
+    SPIFFS/LittleFS call exists in `src/`). `escfg` deliberately keeps its offset
+    (`0x3FF000`) so the web flasher's config part URL does not move.
+  - Root cause of the missing coredump, because the previous reasoning was wrong:
+    `sdkconfig.defaults` claimed to have disabled coredump-to-flash in order to
+    silence the boot-time "No core dump partition found!" warning. **That setting
+    never applied.** The Arduino core ships *precompiled* ESP-IDF libraries whose
+    baked-in Kconfig already has `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` (verified
+    in the packaged `tools/sdk/esp32/sdkconfig` and `.../esp32s3/sdkconfig`), and
+    no project `sdkconfig.defaults` can alter a prebuilt `.a`. The warning was
+    telling the truth: the backend was compiled in, and only the **partition** was
+    missing. Fixed by adding the partition rather than by changing a setting, and
+    `sdkconfig.defaults` now documents this instead of asserting the opposite.
+
 - **Every Raven BLE detection was silently dropped by the dashboard API.** The
   firmware printed a single space before `RSSI=` where the API's pattern
   required two, so the line parsed, failed to match, and returned nothing — it
