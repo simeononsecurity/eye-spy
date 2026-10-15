@@ -546,6 +546,7 @@ const BOARD_CAPS = {
 let selectedManifest = 'manifest-esp32dev.json';
 let cfgObjectUrl = null;   // patched-manifest URL; revoked before each rebuild
 let cfgPartUrl   = null;   // config-blob URL; same — see applyManifest()
+let manifestGeneration = 0; // prevents an older fetch overwriting a newer selection
 
 // CRC-32 (IEEE 802.3, reflected) — the same bitwise algorithm as esCfgCrc32()
 // rather than a table, so the two are comparable by eye.
@@ -630,7 +631,6 @@ function selectFW(el,m){
   document.getElementById('step4').classList.add('active-step');
   document.getElementById('sn2').classList.add('done');
   renderConfig();
-  applyManifest();
 }
 
 // Build (or rebuild) the config UI for the selected board.
@@ -718,29 +718,53 @@ wireConfigEvents();
 
 // Patch the config part into the manifest and point the install button at it.
 async function applyManifest(){
+  const generation = ++manifestGeneration;
+  const requestedManifest = selectedManifest;
   const custom = document.getElementById('cfg-custom').checked;
   const bytes  = custom ? cfgEncode(cfgFromUi()) : cfgErased();
+  let nextCfgPartUrl = null;
+  let nextCfgObjectUrl = null;
 
   try{
-    const base = await (await fetch(selectedManifest)).json();
-    const manifest = Object.assign({}, base);
-    // Revoke the PREVIOUS pair: applyManifest runs on every control change, and
-    // each call would otherwise leak two blob URLs for the page's lifetime.
+    const response = await fetch(requestedManifest);
+    if (generation !== manifestGeneration) return;
+    if (!response.ok) throw new Error('manifest request failed: ' + response.status);
+    const base = await response.json();
+    if (generation !== manifestGeneration) return;
+    if (!Array.isArray(base.builds)) throw new Error('manifest has no builds');
+    nextCfgPartUrl = URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'}));
+    // ESP Web Tools resolves part paths relative to the manifest URL. Once the
+    // manifest becomes a blob URL, its original relative firmware paths no
+    // longer have an HTTP base, so resolve them before serialising the blob.
+    // Parts also belong to each build in the manifest v2 schema; a top-level
+    // `parts` entry is ignored and previously dropped the selected settings.
+    const manifest = Object.assign({}, base, {
+      builds: base.builds.map(build => Object.assign({}, build, {
+        parts: (build.parts || []).map(part => Object.assign({}, part, {
+          path: new URL(part.path, response.url).href,
+        })).concat([{ path: nextCfgPartUrl, offset: CFG.offset }]),
+      })),
+    });
+    nextCfgObjectUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
+    // Replace the pair together only after the newest request is fully built.
+    // Revoking sooner can break the still-valid button while a newer fetch runs.
     if (cfgPartUrl)   URL.revokeObjectURL(cfgPartUrl);
     if (cfgObjectUrl) URL.revokeObjectURL(cfgObjectUrl);
-    cfgPartUrl = URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'}));
-    manifest.parts = (base.parts || []).concat([{ path: cfgPartUrl, offset: CFG.offset }]);
-    cfgObjectUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
+    cfgPartUrl = nextCfgPartUrl;
+    cfgObjectUrl = nextCfgObjectUrl;
     document.getElementById('install-btn').setAttribute('manifest', cfgObjectUrl);
     const note = document.getElementById('cfg-parts-note');
     if (note) note.textContent = custom
       ? 'Your settings will be written to the device along with the firmware.'
       : 'Standard behaviour: no custom settings will be written.';
   }catch(err){
+    if (nextCfgPartUrl)   URL.revokeObjectURL(nextCfgPartUrl);
+    if (nextCfgObjectUrl) URL.revokeObjectURL(nextCfgObjectUrl);
+    if (generation !== manifestGeneration) return;
     // Never leave the button unusable because the manifest could not be patched —
     // fall back to the plain, unconfigured firmware.
     console.error('config manifest patch failed:', err);
-    document.getElementById('install-btn').setAttribute('manifest', selectedManifest);
+    document.getElementById('install-btn').setAttribute('manifest', requestedManifest);
   }
 }
 

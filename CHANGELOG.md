@@ -104,6 +104,13 @@ customers were told.
 
 ### Fixed
 
+- **Configured web flashes now include both firmware and selected settings.**
+  The configurator moved the generated manifest to a `blob:` URL but left firmware
+  paths relative, so ESP Web Tools could try to resolve them against the blob and
+  fail to download them. It also added the settings blob to a top-level `parts`
+  field instead of the manifest schema's `builds[].parts`, so the flasher ignored
+  the user's selections. Firmware URLs are now made absolute before serialising,
+  and the config part is appended to every build that can be selected.
 - **Crash evidence is no longer discarded.** A field unit reported rebooting on
   its own and appearing to lose its session. That could not be acted on, because
   the things "reboot" can mean — a firmware panic, an interrupt/task watchdog, a
