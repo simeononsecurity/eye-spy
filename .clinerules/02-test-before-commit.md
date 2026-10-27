@@ -184,6 +184,12 @@ this workflow before considering any firmware change complete.
    emit a blob under Node, decode it with a host program that includes the real header,
    and compare CRCs (standard check value for `"123456789"` is `0xCBF43926`).
 
+   Run `node --test test/web_flasher.test.js` after any flasher change. The test
+   executes the real inline script with a stub DOM, reads back its generated blob
+   manifest, and verifies two contracts that otherwise fail only in a browser:
+   firmware paths remain downloadable after the manifest moves to a `blob:` URL,
+   and the encoded settings part is nested under each build's `parts` array.
+
 ## Before committing
 
 - Re-run `git status`/`git diff --stat` and confirm every changed file is
