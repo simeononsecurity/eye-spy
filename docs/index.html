@@ -337,7 +337,7 @@
       <div class="step-desc">Click <strong>Install</strong>, select your device's serial port, and wait ~60 s for flashing to complete.</div>
       <div class="flash-action">
         <p class="cfg-note" id="cfg-parts-note"></p>
-        <esp-web-install-button id="install-btn" manifest="manifest-esp32dev.json"></esp-web-install-button>
+        <esp-web-install-button id="install-btn" manifest="manifest-esp32dev.json" hidden></esp-web-install-button>
         <button class="btn-serial" onclick="openSerial()">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3.5A1.5 1.5 0 017.5 2h1A1.5 1.5 0 0110 3.5v1A1.5 1.5 0 018.5 6v1H11a.5.5 0 01.5.5v1a.5.5 0 01-1 0V8H8.5v.5a.5.5 0 01-1 0V8H5.5v.5a.5.5 0 01-1 0v-1A.5.5 0 015 7h2.5V6A1.5 1.5 0 016 4.5v-1z"/><path d="M3.5 6.5A.5.5 0 014 7h1v1H4a.5.5 0 010-1zm8 0a.5.5 0 01.5.5v1h-1V7a.5.5 0 01.5-.5z"/></svg>
           Open Serial Monitor
@@ -544,8 +544,11 @@ const BOARD_CAPS = {
 };
 
 let selectedManifest = 'manifest-esp32dev.json';
-let cfgObjectUrl = null;   // patched-manifest URL; revoked before each rebuild
-let cfgPartUrl   = null;   // config-blob URL; same — see applyManifest()
+// Keep the latest pair for diagnostics. Previously-published pairs deliberately
+// remain valid for this page's lifetime: ESP Web Tools may already have captured
+// one when a configuration change starts building its replacement.
+let cfgObjectUrl = null;
+let cfgPartUrl   = null;
 let manifestGeneration = 0; // prevents an older fetch overwriting a newer selection
 
 // CRC-32 (IEEE 802.3, reflected) — the same bitwise algorithm as esCfgCrc32()
@@ -715,11 +718,18 @@ function wireConfigEvents(){
   });
 }
 wireConfigEvents();
+// The first board is already selected in the markup, so prepare its UI and
+// manifest immediately instead of requiring a second click on the same tile.
+renderConfig();
 
 // Patch the config part into the manifest and point the install button at it.
 async function applyManifest(){
   const generation = ++manifestGeneration;
   const requestedManifest = selectedManifest;
+  const installButton = document.getElementById('install-btn');
+  const note = document.getElementById('cfg-parts-note');
+  installButton.hidden = true;
+  if (note) note.textContent = 'Preparing the installer for the selected board…';
   const custom = document.getElementById('cfg-custom').checked;
   const bytes  = custom ? cfgEncode(cfgFromUi()) : cfgErased();
   let nextCfgPartUrl = null;
@@ -746,17 +756,18 @@ async function applyManifest(){
       })),
     });
     nextCfgObjectUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
-    // Replace the pair together only after the newest request is fully built.
-    // Revoking sooner can break the still-valid button while a newer fetch runs.
-    if (cfgPartUrl)   URL.revokeObjectURL(cfgPartUrl);
-    if (cfgObjectUrl) URL.revokeObjectURL(cfgObjectUrl);
+    // Publish the pair together only after the newest request is fully built.
+    // Do not revoke an older published pair: an installer dialog may already
+    // have captured it, and object URLs are released when this document unloads.
+    installButton.setAttribute('manifest', nextCfgObjectUrl);
     cfgPartUrl = nextCfgPartUrl;
     cfgObjectUrl = nextCfgObjectUrl;
-    document.getElementById('install-btn').setAttribute('manifest', cfgObjectUrl);
-    const note = document.getElementById('cfg-parts-note');
+    nextCfgPartUrl = null;
+    nextCfgObjectUrl = null;
     if (note) note.textContent = custom
       ? 'Your settings will be written to the device along with the firmware.'
       : 'Standard behaviour: no custom settings will be written.';
+    installButton.hidden = false;
   }catch(err){
     if (nextCfgPartUrl)   URL.revokeObjectURL(nextCfgPartUrl);
     if (nextCfgObjectUrl) URL.revokeObjectURL(nextCfgObjectUrl);
@@ -764,7 +775,9 @@ async function applyManifest(){
     // Never leave the button unusable because the manifest could not be patched —
     // fall back to the plain, unconfigured firmware.
     console.error('config manifest patch failed:', err);
-    document.getElementById('install-btn').setAttribute('manifest', requestedManifest);
+    installButton.setAttribute('manifest', requestedManifest);
+    if (note) note.textContent = 'The configured installer could not be prepared; the standard firmware for this board is still available.';
+    installButton.hidden = false;
   }
 }
 

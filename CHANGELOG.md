@@ -104,6 +104,14 @@ customers were told.
 
 ### Fixed
 
+- **The web installer no longer exposes an unprepared or stale board manifest.**
+  The Install control was visible while the selected board manifest was still
+  being fetched and rebuilt, leaving a window where it still pointed at the
+  page's default ESP32 manifest. It now stays unavailable until the newest
+  request publishes either its generated manifest or the static fallback for
+  that same board. Previously published blob URLs also remain valid for the
+  page lifetime, so changing settings cannot invalidate a manifest already
+  captured by an open ESP Web Tools dialog.
 - **Configured web flashes now include both firmware and selected settings.**
   The configurator moved the generated manifest to a `blob:` URL but left firmware
   paths relative, so ESP Web Tools could try to resolve them against the blob and
