@@ -7,8 +7,10 @@ const { test } = require('node:test');
 const pagePath = path.join(__dirname, '..', 'docs', 'index.html');
 const page = fs.readFileSync(pagePath, 'utf8');
 const inlineScript = page.match(/<script>\s*([\s\S]*?)<\/script>/);
+const installButtonTag = page.match(/<esp-web-install-button\b[^>]*\bid="install-btn"[^>]*>/);
 
 assert.ok(inlineScript, 'docs/index.html must contain an inline application script');
+assert.ok(installButtonTag, 'docs/index.html must contain the installer button');
 
 function makeElement() {
   const attributes = new Map();
@@ -16,6 +18,7 @@ function makeElement() {
     checked: false,
     children: [],
     classList: { add() {}, remove() {}, toggle() {} },
+    hidden: false,
     innerHTML: '',
     rows: [],
     style: {},
@@ -33,12 +36,15 @@ function makeElement() {
 function createHarness({ fetchImpl } = {}) {
   const elements = new Map();
   const blobs = new Map();
+  const errors = [];
   let nextBlobId = 1;
 
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, makeElement());
     return elements.get(id);
   };
+
+  element('install-btn').hidden = /\shidden(?:\s|>)/.test(installButtonTag[0]);
 
   class TestURL extends URL {
     static createObjectURL(blob) {
@@ -81,7 +87,10 @@ function createHarness({ fetchImpl } = {}) {
     Uint8Array,
     URL: TestURL,
     clearTimeout,
-    console,
+    console: {
+      ...console,
+      error: (...args) => errors.push(args),
+    },
     document: {
       createElement: () => makeElement(),
       getElementById: element,
@@ -103,7 +112,7 @@ function createHarness({ fetchImpl } = {}) {
       setSelectedManifest(value) { selectedManifest = value; },
     };`, sandbox, { filename: pagePath });
 
-  return { baseManifest, blobs, element, manifestUrl, sandbox };
+  return { baseManifest, blobs, element, errors, manifestUrl, sandbox };
 }
 
 async function generateConfiguredManifest() {
@@ -122,6 +131,7 @@ async function generateConfiguredManifest() {
   await sandbox.__eyeSpyTest.applyManifest();
 
   const generatedUrl = element('install-btn').getAttribute('manifest');
+  assert.equal(element('install-btn').hidden, false);
   const generatedBlob = harness.blobs.get(generatedUrl);
   assert.ok(generatedBlob, 'install button must reference the generated manifest blob');
 
@@ -130,6 +140,23 @@ async function generateConfiguredManifest() {
     manifest: JSON.parse(await generatedBlob.text()),
   };
 }
+
+test('install is unavailable before a board manifest is prepared', () => {
+  const harness = createHarness();
+
+  assert.equal(harness.element('install-btn').hidden, true);
+});
+
+test('preselected board prepares its installer immediately on page load', async () => {
+  const harness = createHarness();
+
+  assert.equal(harness.element('install-btn').hidden, true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.element('install-btn').hidden, false);
+  const generatedUrl = harness.element('install-btn').getAttribute('manifest');
+  assert.ok(harness.blobs.has(generatedUrl));
+});
 
 test('generated manifest resolves firmware paths and adds config to each build', async () => {
   const { manifest } = await generateConfiguredManifest();
@@ -201,6 +228,110 @@ function manifestResponse(url, firmwarePath, json = async () => manifestBody(fir
   };
 }
 
+test('preselected board stays unavailable while startup preparation is delayed', async () => {
+  const pending = deferred();
+  const harness = createHarness({ fetchImpl: () => pending.promise });
+
+  assert.equal(harness.element('install-btn').hidden, true);
+  pending.resolve(manifestResponse(
+    'https://example.test/flasher/manifest-esp32dev.json',
+    'firmware/esp32dev/firmware.bin',
+  ));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.element('install-btn').hidden, false);
+  const generatedUrl = harness.element('install-btn').getAttribute('manifest');
+  assert.ok(harness.blobs.has(generatedUrl));
+});
+
+test('install remains unavailable while a selected board manifest is pending', async () => {
+  const pending = deferred();
+  const harness = createHarness({ fetchImpl: () => pending.promise });
+  harness.sandbox.__eyeSpyTest.setSelectedManifest('manifest-atom-lite.json');
+
+  const apply = harness.sandbox.__eyeSpyTest.applyManifest();
+  assert.equal(harness.element('install-btn').hidden, true);
+
+  pending.resolve(manifestResponse(
+    'https://example.test/flasher/manifest-atom-lite.json',
+    'firmware/atom-lite/firmware.bin',
+  ));
+  await apply;
+
+  assert.equal(harness.element('install-btn').hidden, false);
+  const generatedUrl = harness.element('install-btn').getAttribute('manifest');
+  const manifest = JSON.parse(await harness.blobs.get(generatedUrl).text());
+  assert.equal(
+    manifest.builds[0].parts[0].path,
+    'https://example.test/flasher/firmware/atom-lite/firmware.bin',
+  );
+});
+
+test('configuration rebuild keeps previously published blob URLs usable', async () => {
+  const nextFetch = deferred();
+  let fetchCount = 0;
+  const harness = createHarness({
+    fetchImpl: () => {
+      fetchCount += 1;
+      return fetchCount <= 2
+        ? manifestResponse(
+            'https://example.test/flasher/manifest-atom-lite.json',
+            'firmware/atom-lite/firmware.bin',
+          )
+        : nextFetch.promise;
+    },
+  });
+  harness.sandbox.__eyeSpyTest.setSelectedManifest('manifest-atom-lite.json');
+  await harness.sandbox.__eyeSpyTest.applyManifest();
+
+  const oldManifestUrl = harness.element('install-btn').getAttribute('manifest');
+  const oldManifest = JSON.parse(await harness.blobs.get(oldManifestUrl).text());
+  const oldConfigUrl = oldManifest.builds[0].parts.find(
+    (part) => part.offset === 0x3ff000,
+  ).path;
+
+  harness.element('cfg-custom').checked = true;
+  const rebuild = harness.sandbox.__eyeSpyTest.applyManifest();
+  assert.equal(harness.element('install-btn').hidden, true);
+  assert.ok(harness.blobs.has(oldManifestUrl));
+  assert.ok(harness.blobs.has(oldConfigUrl));
+
+  nextFetch.resolve(manifestResponse(
+    'https://example.test/flasher/manifest-atom-lite.json',
+    'firmware/atom-lite/firmware.bin',
+  ));
+  await rebuild;
+
+  assert.equal(harness.element('install-btn').hidden, false);
+  assert.notEqual(harness.element('install-btn').getAttribute('manifest'), oldManifestUrl);
+  assert.ok(harness.blobs.has(oldManifestUrl));
+  assert.ok(harness.blobs.has(oldConfigUrl));
+});
+
+test('latest failed preparation exposes the same board static manifest fallback', async () => {
+  const pending = deferred();
+  const harness = createHarness({ fetchImpl: () => pending.promise });
+  harness.sandbox.__eyeSpyTest.setSelectedManifest('manifest-atom-lite.json');
+
+  const apply = harness.sandbox.__eyeSpyTest.applyManifest();
+  assert.equal(harness.element('install-btn').hidden, true);
+
+  pending.resolve({
+    json: async () => { throw new Error('unexpected JSON read'); },
+    ok: false,
+    status: 503,
+    url: 'https://example.test/flasher/manifest-atom-lite.json',
+  });
+  await apply;
+
+  assert.equal(harness.element('install-btn').hidden, false);
+  assert.equal(
+    harness.element('install-btn').getAttribute('manifest'),
+    'manifest-atom-lite.json',
+  );
+  assert.match(harness.element('cfg-parts-note').textContent, /standard firmware/i);
+});
+
 test('an older manifest response cannot replace the latest selection', async () => {
   const oldJson = deferred();
   const oldJsonStarted = deferred();
@@ -220,14 +351,17 @@ test('an older manifest response cannot replace the latest selection', async () 
   await oldJsonStarted.promise;
   harness.sandbox.__eyeSpyTest.setSelectedManifest('new.json');
   const newApply = harness.sandbox.__eyeSpyTest.applyManifest();
+  assert.equal(harness.element('install-btn').hidden, true);
 
   newFetch.resolve(manifestResponse(
     'https://example.test/flasher/new.json',
     'firmware/new.bin',
   ));
   await newApply;
+  assert.equal(harness.element('install-btn').hidden, false);
   oldJson.resolve(manifestBody('firmware/old.bin'));
   await oldApply;
+  assert.equal(harness.element('install-btn').hidden, false);
 
   const generatedUrl = harness.element('install-btn').getAttribute('manifest');
   const manifest = JSON.parse(await harness.blobs.get(generatedUrl).text());
@@ -256,14 +390,17 @@ test('an older failed request cannot replace the latest configured manifest', as
   await oldJsonStarted.promise;
   harness.sandbox.__eyeSpyTest.setSelectedManifest('new.json');
   const newApply = harness.sandbox.__eyeSpyTest.applyManifest();
+  assert.equal(harness.element('install-btn').hidden, true);
 
   newFetch.resolve(manifestResponse(
     'https://example.test/flasher/new.json',
     'firmware/new.bin',
   ));
   await newApply;
+  assert.equal(harness.element('install-btn').hidden, false);
   oldJson.reject(new Error('old manifest JSON failed'));
   await oldApply;
+  assert.equal(harness.element('install-btn').hidden, false);
 
   assert.match(harness.element('install-btn').getAttribute('manifest'), /^blob:test-/);
 });

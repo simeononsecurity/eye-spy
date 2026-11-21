@@ -186,9 +186,12 @@ this workflow before considering any firmware change complete.
 
    Run `node --test test/web_flasher.test.js` after any flasher change. The test
    executes the real inline script with a stub DOM, reads back its generated blob
-   manifest, and verifies two contracts that otherwise fail only in a browser:
-   firmware paths remain downloadable after the manifest moves to a `blob:` URL,
-   and the encoded settings part is nested under each build's `parts` array.
+   manifest, and verifies contracts that otherwise fail only in a browser:
+   firmware paths remain downloadable after the manifest moves to a `blob:` URL;
+   the encoded settings part is nested under each build's `parts` array; Install
+   remains unavailable while the newest board/config manifest is being prepared;
+   out-of-order requests cannot publish an older board; and replacing the current
+   manifest does not revoke blob URLs an already-open installer may have captured.
 
 ## Before committing
 
